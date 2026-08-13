@@ -1,0 +1,7 @@
+pub const PACKAGE = (
+    name = "registry_compress_consumer",
+    version = "0.1.0",
+    dependencies = (
+        compress = "compress:0.1.0",
+    )
+)

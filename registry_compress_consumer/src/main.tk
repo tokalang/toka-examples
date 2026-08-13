@@ -1,0 +1,69 @@
+import official/compress::{Encoder, package_name}
+import official/compress/http::{encode_response_for_request}
+import core/option::{Option}
+import std/bytes::{Bytes}
+import std/io::{println}
+import std/vec::{Vec}
+import stdx/net/http::{HttpResponse}
+
+fn bytes_from_text(value: str) -> Bytes {
+    auto bytes# = Vec<u8>::with_capacity(value.len())
+    auto index# = 0:usize
+    loop index < value.len() {
+        bytes#.push(value.byte_at(index) as u8)
+        index = index + 1:usize
+    }
+    return Bytes::from_vec(cede bytes)
+}
+
+fn append(target#: Vec<u8>, cede chunk: Bytes) {
+    auto owned# = cede chunk
+    auto bytes = owned#.into_vec()
+    auto index# = 0:usize
+    loop index < bytes.len() {
+        target#.push(bytes.get(index))
+        index = index + 1:usize
+    }
+}
+
+fn main() -> i32 {
+    if !package_name().as_str().equals("compress") { return 1 }
+
+    auto gzip# = Encoder::gzip(-1:i32).unwrap()
+    auto gzip_bytes# = Vec<u8>::new()
+    append(gzip_bytes, cede gzip#.write(cede bytes_from_text("registry gzip payload")).unwrap())
+    append(gzip_bytes, cede gzip#.finish().unwrap())
+    if gzip_bytes.len() < 2:usize || gzip_bytes.get(0:usize) != 31:u8 ||
+       gzip_bytes.get(1:usize) != 139:u8 {
+        return 2
+    }
+
+    auto zstd# = Encoder::zstd(3:i32).unwrap()
+    auto zstd_bytes# = Vec<u8>::new()
+    append(zstd_bytes, cede zstd#.write(cede bytes_from_text("registry zstd payload")).unwrap())
+    append(zstd_bytes, cede zstd#.finish().unwrap())
+    if zstd_bytes.len() < 4:usize || zstd_bytes.get(0:usize) != 40:u8 ||
+       zstd_bytes.get(1:usize) != 181:u8 || zstd_bytes.get(2:usize) != 47:u8 ||
+       zstd_bytes.get(3:usize) != 253:u8 {
+        return 3
+    }
+
+    auto response = HttpResponse::ok(string::from("registry HTTP payload"))
+    auto encoded = encode_response_for_request(
+        cede response,
+        Option<string>::Some(string::from("gzip")),
+        -1:i32
+    )
+    if encoded.is_err() { return 4 }
+    auto compressed = encoded.unwrap()
+    auto content_encoding = compressed.headers.get("content-encoding")
+    match cede content_encoding {
+        auto Option<string>::Some('value) => {
+            if !'value.as_str().equals("gzip") { return 5 }
+        }
+        _ => return 5
+    }
+
+    println("public compression registry consumer passed")
+    return 0
+}
