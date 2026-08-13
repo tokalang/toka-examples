@@ -1,0 +1,23 @@
+import official/gui::{Bounds, Layout, TextEditor}
+
+fn main() -> i32 {
+    auto content = Layout::inset(
+        Bounds(x = 0.0:f64, y = 0.0:f64, width = 1.0:f64, height = 1.0:f64),
+        0.1:f64
+    ).unwrap()
+    if content.x != 0.1:f64 || content.y != 0.1:f64 ||
+       content.width != 0.8:f64 || content.height != 0.8:f64 {
+        return 1
+    }
+
+    auto editor# = TextEditor::new("ÄB").unwrap()
+    if !editor#.move_right().unwrap() ||
+       editor.selection().active() != 1:usize {
+        return 2
+    }
+    if !editor#.delete_backward().unwrap() ||
+       !editor.text().equals("B") {
+        return 3
+    }
+    return 0
+}
