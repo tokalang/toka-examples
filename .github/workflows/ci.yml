@@ -110,3 +110,28 @@ jobs:
           cmp package.lock "$RUNNER_TEMP/registry-sqlite-package.lock"
           test -n "$(find .toka/build/native -type f -name 'sqlite_preflight-*.o' -print -quit)"
           ./target/debug/registry_sqlite_consumer
+
+      - name: Resolve and run PostgreSQL registry consumer from a fresh cache
+        working-directory: registry_postgres_consumer
+        run: |
+          set -euo pipefail
+          rm -rf target .toka
+          toka fetch
+          cp package.lock "$RUNNER_TEMP/registry-postgres-package.lock"
+          test -f .toka/packages/postgres-0.1.0/lib/official/postgres.tk
+          toka build
+          ./target/debug/registry_postgres_consumer
+
+      - name: Replay PostgreSQL lock offline from the cached archive
+        working-directory: registry_postgres_consumer
+        run: |
+          set -euo pipefail
+          test -n "$(find .toka/cache/archives -type f -print -quit)"
+          rm -rf target .toka/packages .toka/build
+          test ! -e .toka/build
+          TOKA_OFFLINE=1 toka fetch
+          cmp package.lock "$RUNNER_TEMP/registry-postgres-package.lock"
+          test -f .toka/packages/postgres-0.1.0/lib/official/postgres.tk
+          TOKA_OFFLINE=1 toka build
+          cmp package.lock "$RUNNER_TEMP/registry-postgres-package.lock"
+          ./target/debug/registry_postgres_consumer

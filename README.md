@@ -23,6 +23,9 @@ reproducible build or qualification command.
 - [`registry_sqlite_consumer`](registry_sqlite_consumer) verifies the native
   in-memory lifecycle, prepared statements, and transactions of the immutable
   SQLite package through online and archive-only offline lock replay.
+- [`registry_postgres_consumer`](registry_postgres_consumer) verifies the
+  bounded PostgreSQL wire codec and startup configuration of the immutable
+  PostgreSQL package without requiring an external database server.
 - [`service-kit`](service-kit) demonstrates a registry-locked HTTP service
   composed from the Router and SQLite packages, with online and archive-only
   offline qualification.

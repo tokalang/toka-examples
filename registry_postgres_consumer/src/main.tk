@@ -1,0 +1,84 @@
+import official/postgres::{PostgresConfig, PostgresDecode, PostgresMessage, decode_backend_one, package_name, simple_query_message, startup_message}
+import std/io::{println}
+import std/net::{Ipv4Addr, SocketAddrV4}
+import std/vec::{Vec}
+
+fn ready_for_query_frame() -> Vec<u8> {
+    auto frame# = Vec<u8>::new()
+    frame#.push('Z' as u8)
+    frame#.push(0:u8)
+    frame#.push(0:u8)
+    frame#.push(0:u8)
+    frame#.push(5:u8)
+    frame#.push('I' as u8)
+    return frame
+}
+
+fn main() -> i32 {
+    if !package_name().equals("postgres") { return 1 }
+
+    auto startup = startup_message("registry", "notes").unwrap()
+    if startup.len() != 38:usize ||
+       startup.get(0:usize) != 0:u8 || startup.get(3:usize) != 38:u8 ||
+       startup.get(4:usize) != 0:u8 || startup.get(5:usize) != 3:u8 ||
+       startup.get(6:usize) != 0:u8 || startup.get(7:usize) != 0:u8 ||
+       startup.get(37:usize) != 0:u8 {
+        return 2
+    }
+    if startup_message("", "notes").is_ok() ||
+       startup_message("bad\x00user", "notes").is_ok() {
+        return 3
+    }
+
+    auto query = simple_query_message("SELECT 1").unwrap()
+    if query.len() != 14:usize || query.get(0:usize) != 'Q' as u8 ||
+       query.get(4:usize) != 13:u8 || query.get(13:usize) != 0:u8 {
+        return 4
+    }
+    if simple_query_message("").is_ok() ||
+       simple_query_message("SELECT\x001").is_ok() {
+        return 5
+    }
+
+    auto partial# = Vec<u8>::new()
+    partial#.push('Z' as u8)
+    partial#.push(0:u8)
+    partial#.push(0:u8)
+    partial#.push(0:u8)
+    match decode_backend_one(cede partial).unwrap() {
+        auto PostgresDecode::NeedMore() => {}
+        _ => return 6
+    }
+
+    match cede decode_backend_one(ready_for_query_frame()).unwrap() {
+        auto PostgresDecode::Complete('decoded) => {
+            if 'decoded.consumed != 6:usize { return 7 }
+            match cede 'decoded.message {
+                auto PostgresMessage::ReadyForQuery('status) => {
+                    if 'status != 'I' as u8 { return 8 }
+                }
+                _ => return 9
+            }
+        }
+        _ => return 10
+    }
+
+    auto malformed# = Vec<u8>::new()
+    malformed#.push('Z' as u8)
+    malformed#.push(0:u8)
+    malformed#.push(0:u8)
+    malformed#.push(0:u8)
+    malformed#.push(3:u8)
+    if decode_backend_one(cede malformed).is_ok() { return 11 }
+
+    auto address = SocketAddrV4::new(
+        Ipv4Addr::new(127:u8, 0:u8, 0:u8, 1:u8), 5432:u16
+    )
+    if PostgresConfig::trusted_local(address, "registry", "notes").is_err() ||
+       PostgresConfig::trusted_local(address, "", "notes").is_ok() {
+        return 12
+    }
+
+    println("public PostgreSQL registry consumer passed")
+    return 0
+}
