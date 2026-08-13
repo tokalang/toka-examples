@@ -1,0 +1,7 @@
+pub const PACKAGE = (
+    name = "registry_gui_consumer",
+    version = "0.1.0",
+    dependencies = (
+        gui = "gui:0.1.0",
+    )
+)

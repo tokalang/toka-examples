@@ -29,6 +29,10 @@ reproducible build or qualification command.
 - [`registry_unicode_consumer`](registry_unicode_consumer) verifies Unicode
   grapheme segmentation, byte-offset mapping, and malformed UTF-8 reporting
   through online and archive-only offline registry resolution.
+- [`registry_gui_consumer`](registry_gui_consumer) verifies the macOS GUI
+  package's headless layout and grapheme-editor APIs, native Objective-C build,
+  framework links, and locked transitive Unicode dependency through online and
+  archive-only offline registry resolution.
 - [`service-kit`](service-kit) demonstrates a registry-locked HTTP service
   composed from the Router and SQLite packages, with online and archive-only
   offline qualification.

@@ -172,3 +172,133 @@ jobs:
           TOKA_OFFLINE=1 toka build
           cmp package.lock "$RUNNER_TEMP/registry-unicode-package.lock"
           ./target/debug/registry_unicode_consumer
+
+  registry-gui-consumer:
+    name: GUI registry consumer (macos-arm64)
+    runs-on: macos-15
+    timeout-minutes: 20
+    env:
+      TOKA_ARCHIVE: toka-v1.0.0-rc.4-macos-arm64.tar.gz
+      TOKA_ARCHIVE_SHA256: f5e9043af6f650bca42e95d22fda28c6814413faa4bf9478decfeb884d4d0866
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install macOS dependencies
+        run: |
+          set -euo pipefail
+          brew install lld@20 zstd openssl@3
+          echo "CC=xcrun --sdk macosx clang" >> "$GITHUB_ENV"
+          sdk_path="$(xcrun --show-sdk-path)"
+          test -d "$sdk_path/System/Library/Frameworks/AppKit.framework"
+          test -d "$sdk_path/System/Library/Frameworks/Metal.framework"
+          test -d "$sdk_path/System/Library/Frameworks/QuartzCore.framework"
+
+      - name: Install locked Toka SDK
+        run: |
+          set -euo pipefail
+          archive="$RUNNER_TEMP/$TOKA_ARCHIVE"
+          curl --fail --location --retry 3 \
+            --output "$archive" \
+            "https://github.com/tokalang/toka/releases/download/$TOKA_VERSION/$TOKA_ARCHIVE"
+          echo "$TOKA_ARCHIVE_SHA256  $archive" | shasum -a 256 --check
+          tar -xzf "$archive" -C "$RUNNER_TEMP"
+          sdk="$RUNNER_TEMP/${TOKA_ARCHIVE%.tar.gz}"
+          test -x "$sdk/bin/toka"
+          test -x "$sdk/bin/tokac"
+          test -f "$sdk/lib/sys/toka_rt.o"
+          test -f "$sdk/lib/toolchain/toka_build.py"
+          test -f "$sdk/lib/toolchain/toka_package.py"
+          "$sdk/bin/toka" --version | grep -F '1.0.0-rc.4'
+          "$sdk/bin/tokac" --version | grep -F '1.0.0-rc.4'
+          echo "$sdk/bin" >> "$GITHUB_PATH"
+          echo "TOKA=$sdk/bin/toka" >> "$GITHUB_ENV"
+          echo "TOKAC=$sdk/bin/tokac" >> "$GITHUB_ENV"
+          echo "TOKA_LIB=$sdk/lib" >> "$GITHUB_ENV"
+
+      - name: Resolve and build GUI consumer from a fresh cache
+        working-directory: registry_gui_consumer
+        run: |
+          set -euo pipefail
+          rm -rf target .toka
+          rm -f .toka_build_exe
+          cp package.lock "$RUNNER_TEMP/registry-gui-package.lock"
+          python3 - <<'PY'
+          from pathlib import Path
+
+          lines = Path("package.lock").read_text(encoding="utf-8").splitlines()
+          if len(lines) != 3 or lines[0] != "toka-lock-v1":
+              raise SystemExit("GUI consumer lock must contain exactly two packages")
+          entries = {fields[1]: fields for fields in (line.split("\t") for line in lines[1:])}
+          if set(entries) != {"gui", "unicode"}:
+              raise SystemExit("GUI consumer lock must contain only gui and unicode")
+          expected_gui = [
+              "package", "gui", "registry", "gui", "0.1.0",
+              "b17fb7d4ce6bcb8c3a533216e40ca2c63ab95e0263ceffac8e2636d2f97ce85d",
+              "eacbb69299afb7f1e6183c27cc9a54c44b2c75a489c6e3e38cedbb0999d5d77e",
+              "unicode",
+          ]
+          if entries["gui"] != expected_gui:
+              raise SystemExit("GUI consumer does not lock the exact GUI 0.1.0 release")
+          expected_unicode = [
+              "package", "unicode", "registry", "unicode", "0.1.1",
+              "c68569e6efbd9eb9bf85226eca68de3a0187d4300e320aeb13857be73b5ad28a",
+              "8c82ff393812d1ddd9a8b1f6d71d8ab49863a68b6193af1d784ea722e052fe76",
+              "-",
+          ]
+          if entries["unicode"] != expected_unicode:
+              raise SystemExit("GUI consumer does not lock the exact Unicode 0.1.1 release")
+          PY
+          toka fetch
+          cmp package.lock "$RUNNER_TEMP/registry-gui-package.lock"
+          test -f .toka/packages/gui-0.1.0/LICENSE
+          test -f .toka/packages/gui-0.1.0/lib/official/gui.tk
+          test -f .toka/packages/gui-0.1.0/lib/official/gui/text.tk
+          test -f .toka/packages/gui-0.1.0/native/toka_gui.m
+          test -f .toka/packages/unicode-0.1.1/LICENSE
+          test -f .toka/packages/unicode-0.1.1/LICENSE-UNICODE
+          test -f .toka/packages/unicode-0.1.1/lib/official/unicode.tk
+          test -z "$(find .toka/packages/gui-0.1.0 .toka/packages/unicode-0.1.1 -name '._*' -print -quit)"
+          gui_archive_sha="$(awk -F '\t' '$1 == "package" && $2 == "gui" { print $6 }' package.lock)"
+          unicode_archive_sha="$(awk -F '\t' '$1 == "package" && $2 == "unicode" { print $6 }' package.lock)"
+          test "$(find .toka/cache/archives -type f | wc -l | tr -d ' ')" = 2
+          test -f ".toka/cache/archives/$gui_archive_sha.tar.gz"
+          test -f ".toka/cache/archives/$unicode_archive_sha.tar.gz"
+          echo "$gui_archive_sha  .toka/cache/archives/$gui_archive_sha.tar.gz" | shasum -a 256 --check
+          echo "$unicode_archive_sha  .toka/cache/archives/$unicode_archive_sha.tar.gz" | shasum -a 256 --check
+          toka build
+          cmp package.lock "$RUNNER_TEMP/registry-gui-package.lock"
+          test -n "$(find .toka/build/native -type f -name 'toka_gui-*.o' -print -quit)"
+          test -x target/debug/registry_gui_consumer
+          ./target/debug/registry_gui_consumer
+          otool -L target/debug/registry_gui_consumer | grep -F 'AppKit.framework/'
+          otool -L target/debug/registry_gui_consumer | grep -F 'Metal.framework/'
+          otool -L target/debug/registry_gui_consumer | grep -F 'QuartzCore.framework/'
+
+      - name: Replay GUI and Unicode locks offline from archives only
+        working-directory: registry_gui_consumer
+        run: |
+          set -euo pipefail
+          test "$(find .toka/cache/archives -type f | wc -l | tr -d ' ')" = 2
+          rm -rf target .toka/packages .toka/build .toka/staging
+          rm -f .toka_build_exe
+          test ! -e target
+          test ! -e .toka/packages
+          test ! -e .toka/build
+          test ! -e .toka_build_exe
+          test "$(find .toka -type f | wc -l | tr -d ' ')" = 2
+          TOKA_OFFLINE=1 toka fetch
+          cmp package.lock "$RUNNER_TEMP/registry-gui-package.lock"
+          test -f .toka/packages/gui-0.1.0/lib/official/gui.tk
+          test -f .toka/packages/gui-0.1.0/lib/official/gui/text.tk
+          test -f .toka/packages/gui-0.1.0/native/toka_gui.m
+          test -f .toka/packages/unicode-0.1.1/lib/official/unicode.tk
+          test ! -e .toka/build/native
+          TOKA_OFFLINE=1 toka build
+          cmp package.lock "$RUNNER_TEMP/registry-gui-package.lock"
+          test -n "$(find .toka/build/native -type f -name 'toka_gui-*.o' -print -quit)"
+          test -x target/debug/registry_gui_consumer
+          ./target/debug/registry_gui_consumer
+          otool -L target/debug/registry_gui_consumer | grep -F 'AppKit.framework/'
+          otool -L target/debug/registry_gui_consumer | grep -F 'Metal.framework/'
+          otool -L target/debug/registry_gui_consumer | grep -F 'QuartzCore.framework/'
