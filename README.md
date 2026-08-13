@@ -17,6 +17,12 @@ reproducible build or qualification command.
 
 - [`registry_regex_consumer`](registry_regex_consumer) verifies an immutable
   public-registry dependency through online and offline lock replay.
+- [`registry_router_consumer`](registry_router_consumer) verifies exact Router
+  matching and path-parameter behavior through fresh public-registry resolution
+  and strict archive-only offline replay.
+- [`registry_openai_compat_consumer`](registry_openai_compat_consumer) verifies
+  exact OpenAI-compatible SSE event decoding through fresh public-registry
+  resolution and strict archive-only offline replay.
 - [`registry_compress_consumer`](registry_compress_consumer) verifies the
   native Gzip, Zstd, and HTTP policy surfaces of the immutable compression
   package through online and offline lock replay.

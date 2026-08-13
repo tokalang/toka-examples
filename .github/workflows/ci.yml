@@ -14,6 +14,10 @@ env:
   TOKA_VERSION: v1.0.0-rc.4
   TOKA_ARCHIVE: toka-v1.0.0-rc.4-linux-x64.tar.gz
   TOKA_ARCHIVE_SHA256: fee16678f67bb88ace9b0f31603f9b56a24802de6d16a5bca60b3714dd4d30f6
+  ROUTER_ARCHIVE_SHA256: efc154757556e37ffbc7891481c6031ccc6b0161e3ea391e4a100080e407ed78
+  ROUTER_CONTENT_SHA256: f5dcfab01ba3e4dbecbcea5e334673c3fc5fdf1b95c76f1c90d0c55ae30d0a1c
+  OPENAI_COMPAT_ARCHIVE_SHA256: 8c3d139e0a4147f0f6bfcc73da623a5eeac670543af86468350c27fb5c13a457
+  OPENAI_COMPAT_CONTENT_SHA256: b4a4274ef34ac6773a95ca0cdc5974d38987bb29dcba4e35820c51fc857f2a35
 
 jobs:
   registry-consumers:
@@ -60,6 +64,100 @@ jobs:
           rm -rf target .toka/packages
           TOKA_OFFLINE=1 toka build
           ./target/debug/registry_regex_consumer
+
+      - name: Resolve and run Router registry consumer from a fresh cache
+        working-directory: registry_router_consumer
+        run: |
+          set -euo pipefail
+          rm -rf target .toka
+          rm -f .toka_build_exe
+          cp package.lock "$RUNNER_TEMP/registry-router-package.lock"
+          test "$(sed -n '1p' package.lock)" = "toka-lock-v1"
+          test "$(wc -l < package.lock | tr -d ' ')" = 2
+          expected="$(printf 'package\trouter\tregistry\trouter\t0.1.0\t%s\t%s\t-' \
+            "$ROUTER_ARCHIVE_SHA256" "$ROUTER_CONTENT_SHA256")"
+          test "$(sed -n '2p' package.lock)" = "$expected"
+          toka fetch
+          cmp package.lock "$RUNNER_TEMP/registry-router-package.lock"
+          test "$(find .toka/cache/archives -type f | wc -l | tr -d ' ')" = 1
+          test -f ".toka/cache/archives/$ROUTER_ARCHIVE_SHA256.tar.gz"
+          echo "$ROUTER_ARCHIVE_SHA256  .toka/cache/archives/$ROUTER_ARCHIVE_SHA256.tar.gz" | sha256sum --check --strict
+          test -f .toka/packages/router-0.1.0/lib/official/router.tk
+          toka build
+          cmp package.lock "$RUNNER_TEMP/registry-router-package.lock"
+          test -x target/debug/registry_router_consumer
+          ./target/debug/registry_router_consumer
+
+      - name: Replay Router lock offline from its archive only
+        working-directory: registry_router_consumer
+        run: |
+          set -euo pipefail
+          archive="$RUNNER_TEMP/router-$ROUTER_ARCHIVE_SHA256.tar.gz"
+          cp ".toka/cache/archives/$ROUTER_ARCHIVE_SHA256.tar.gz" "$archive"
+          rm -rf target .toka
+          rm -f .toka_build_exe
+          mkdir -p .toka/cache/archives
+          cp "$archive" ".toka/cache/archives/$ROUTER_ARCHIVE_SHA256.tar.gz"
+          test ! -e target
+          test ! -e .toka/packages
+          test ! -e .toka/build
+          test ! -e .toka_build_exe
+          test "$(find .toka -type f | wc -l | tr -d ' ')" = 1
+          echo "$ROUTER_ARCHIVE_SHA256  .toka/cache/archives/$ROUTER_ARCHIVE_SHA256.tar.gz" | sha256sum --check --strict
+          TOKA_OFFLINE=1 toka fetch
+          cmp package.lock "$RUNNER_TEMP/registry-router-package.lock"
+          test -f .toka/packages/router-0.1.0/lib/official/router.tk
+          TOKA_OFFLINE=1 toka build
+          cmp package.lock "$RUNNER_TEMP/registry-router-package.lock"
+          test -x target/debug/registry_router_consumer
+          ./target/debug/registry_router_consumer
+
+      - name: Resolve and run OpenAI-compatible registry consumer from a fresh cache
+        working-directory: registry_openai_compat_consumer
+        run: |
+          set -euo pipefail
+          rm -rf target .toka
+          rm -f .toka_build_exe
+          cp package.lock "$RUNNER_TEMP/registry-openai-compat-package.lock"
+          test "$(sed -n '1p' package.lock)" = "toka-lock-v1"
+          test "$(wc -l < package.lock | tr -d ' ')" = 2
+          expected="$(printf 'package\topenai_compat\tregistry\topenai_compat\t0.1.1\t%s\t%s\t-' \
+            "$OPENAI_COMPAT_ARCHIVE_SHA256" "$OPENAI_COMPAT_CONTENT_SHA256")"
+          test "$(sed -n '2p' package.lock)" = "$expected"
+          toka fetch
+          cmp package.lock "$RUNNER_TEMP/registry-openai-compat-package.lock"
+          test "$(find .toka/cache/archives -type f | wc -l | tr -d ' ')" = 1
+          test -f ".toka/cache/archives/$OPENAI_COMPAT_ARCHIVE_SHA256.tar.gz"
+          echo "$OPENAI_COMPAT_ARCHIVE_SHA256  .toka/cache/archives/$OPENAI_COMPAT_ARCHIVE_SHA256.tar.gz" | sha256sum --check --strict
+          test -f .toka/packages/openai_compat-0.1.1/lib/official/openai_compat.tk
+          toka build
+          cmp package.lock "$RUNNER_TEMP/registry-openai-compat-package.lock"
+          test -x target/debug/registry_openai_compat_consumer
+          ./target/debug/registry_openai_compat_consumer
+
+      - name: Replay OpenAI-compatible lock offline from its archive only
+        working-directory: registry_openai_compat_consumer
+        run: |
+          set -euo pipefail
+          archive="$RUNNER_TEMP/openai-compat-$OPENAI_COMPAT_ARCHIVE_SHA256.tar.gz"
+          cp ".toka/cache/archives/$OPENAI_COMPAT_ARCHIVE_SHA256.tar.gz" "$archive"
+          rm -rf target .toka
+          rm -f .toka_build_exe
+          mkdir -p .toka/cache/archives
+          cp "$archive" ".toka/cache/archives/$OPENAI_COMPAT_ARCHIVE_SHA256.tar.gz"
+          test ! -e target
+          test ! -e .toka/packages
+          test ! -e .toka/build
+          test ! -e .toka_build_exe
+          test "$(find .toka -type f | wc -l | tr -d ' ')" = 1
+          echo "$OPENAI_COMPAT_ARCHIVE_SHA256  .toka/cache/archives/$OPENAI_COMPAT_ARCHIVE_SHA256.tar.gz" | sha256sum --check --strict
+          TOKA_OFFLINE=1 toka fetch
+          cmp package.lock "$RUNNER_TEMP/registry-openai-compat-package.lock"
+          test -f .toka/packages/openai_compat-0.1.1/lib/official/openai_compat.tk
+          TOKA_OFFLINE=1 toka build
+          cmp package.lock "$RUNNER_TEMP/registry-openai-compat-package.lock"
+          test -x target/debug/registry_openai_compat_consumer
+          ./target/debug/registry_openai_compat_consumer
 
       - name: Resolve and run compression registry consumer from a fresh cache
         working-directory: registry_compress_consumer
