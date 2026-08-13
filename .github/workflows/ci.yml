@@ -135,3 +135,40 @@ jobs:
           TOKA_OFFLINE=1 toka build
           cmp package.lock "$RUNNER_TEMP/registry-postgres-package.lock"
           ./target/debug/registry_postgres_consumer
+
+      - name: Resolve and run Unicode registry consumer from a fresh cache
+        working-directory: registry_unicode_consumer
+        run: |
+          set -euo pipefail
+          rm -rf target .toka
+          toka fetch
+          cp package.lock "$RUNNER_TEMP/registry-unicode-package.lock"
+          test -f .toka/packages/unicode-0.1.1/LICENSE
+          test -f .toka/packages/unicode-0.1.1/LICENSE-UNICODE
+          test -d .toka/packages/unicode-0.1.1/data
+          test -d .toka/packages/unicode-0.1.1/tools
+          test -z "$(find .toka/packages/unicode-0.1.1 -name '._*' -print -quit)"
+          toka build
+          ./target/debug/registry_unicode_consumer
+
+      - name: Replay Unicode lock offline from the cached archive
+        working-directory: registry_unicode_consumer
+        run: |
+          set -euo pipefail
+          test -n "$(find .toka/cache/archives -type f -print -quit)"
+          rm -rf target .toka/packages .toka/build
+          rm -f .toka_build_exe
+          test ! -e target
+          test ! -e .toka/packages
+          test ! -e .toka/build
+          test ! -e .toka_build_exe
+          TOKA_OFFLINE=1 toka fetch
+          cmp package.lock "$RUNNER_TEMP/registry-unicode-package.lock"
+          test -f .toka/packages/unicode-0.1.1/LICENSE
+          test -f .toka/packages/unicode-0.1.1/LICENSE-UNICODE
+          test -d .toka/packages/unicode-0.1.1/data
+          test -d .toka/packages/unicode-0.1.1/tools
+          test -z "$(find .toka/packages/unicode-0.1.1 -name '._*' -print -quit)"
+          TOKA_OFFLINE=1 toka build
+          cmp package.lock "$RUNNER_TEMP/registry-unicode-package.lock"
+          ./target/debug/registry_unicode_consumer
