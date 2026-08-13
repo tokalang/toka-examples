@@ -17,6 +17,9 @@ reproducible build or qualification command.
 
 - [`registry_regex_consumer`](registry_regex_consumer) verifies an immutable
   public-registry dependency through online and offline lock replay.
+- [`registry_compress_consumer`](registry_compress_consumer) verifies the
+  native Gzip, Zstd, and HTTP policy surfaces of the immutable compression
+  package through online and offline lock replay.
 
 ## License
 

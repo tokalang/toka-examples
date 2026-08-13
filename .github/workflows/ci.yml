@@ -21,8 +21,22 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: Install native package dependencies
+        run: |
+          set -euo pipefail
+          export DEBIAN_FRONTEND=noninteractive
+          sudo -E apt-get update -o Acquire::Retries=5
+          sudo apt-get install -y curl lsb-release pkg-config software-properties-common wget \
+            zlib1g-dev libzstd-dev libssl-dev
+          wget --timeout=15 --tries=3 https://apt.llvm.org/llvm.sh
+          chmod +x llvm.sh
+          sudo -E ./llvm.sh 20
+          echo "/usr/lib/llvm-20/bin" >> "$GITHUB_PATH"
+          echo "CC=clang-20" >> "$GITHUB_ENV"
+
       - name: Install locked Toka SDK
         run: |
+          set -euo pipefail
           curl --fail --location --retry 3 \
             --output "$RUNNER_TEMP/$TOKA_ARCHIVE" \
             "https://github.com/tokalang/toka/releases/download/$TOKA_VERSION/$TOKA_ARCHIVE"
@@ -32,15 +46,39 @@ jobs:
           echo "$sdk/bin" >> "$GITHUB_PATH"
           echo "TOKA_LIB=$sdk/lib" >> "$GITHUB_ENV"
 
-      - name: Build and run registry consumer
+      - name: Build and run regex registry consumer
         working-directory: registry_regex_consumer
         run: |
+          set -euo pipefail
           toka build
           ./target/debug/registry_regex_consumer
 
-      - name: Replay lock offline
+      - name: Replay regex lock offline
         working-directory: registry_regex_consumer
         run: |
+          set -euo pipefail
           rm -rf target .toka/packages
           TOKA_OFFLINE=1 toka build
           ./target/debug/registry_regex_consumer
+
+      - name: Resolve and run compression registry consumer from a fresh cache
+        working-directory: registry_compress_consumer
+        run: |
+          set -euo pipefail
+          rm -rf target .toka
+          toka fetch
+          cp package.lock "$RUNNER_TEMP/registry-compress-package.lock"
+          toka build
+          ./target/debug/registry_compress_consumer
+
+      - name: Replay compression lock offline from the cached archive
+        working-directory: registry_compress_consumer
+        run: |
+          set -euo pipefail
+          test -n "$(find .toka/cache/archives -type f -print -quit)"
+          rm -rf target .toka/packages
+          TOKA_OFFLINE=1 toka fetch
+          cmp package.lock "$RUNNER_TEMP/registry-compress-package.lock"
+          TOKA_OFFLINE=1 toka build
+          cmp package.lock "$RUNNER_TEMP/registry-compress-package.lock"
+          ./target/debug/registry_compress_consumer
