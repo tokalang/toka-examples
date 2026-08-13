@@ -1,0 +1,8 @@
+pub const PACKAGE = (
+    name = "service_kit",
+    version = "0.1.0",
+    dependencies = (
+        router = "router:0.1.0",
+        sqlite = "sqlite:0.1.0",
+    )
+)

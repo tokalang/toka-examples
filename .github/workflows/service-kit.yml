@@ -1,0 +1,67 @@
+name: Service kit registry qualification
+
+on:
+  pull_request:
+    paths:
+      - "service-kit/**"
+      - ".github/workflows/service-kit.yml"
+  push:
+    branches:
+      - main
+    paths:
+      - "service-kit/**"
+      - ".github/workflows/service-kit.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  TOKA_VERSION: v1.0.0-rc.4
+  TOKA_ARCHIVE: toka-v1.0.0-rc.4-linux-x64.tar.gz
+  TOKA_ARCHIVE_SHA256: fee16678f67bb88ace9b0f31603f9b56a24802de6d16a5bca60b3714dd4d30f6
+
+jobs:
+  qualify:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install native dependencies
+        run: |
+          set -euo pipefail
+          export DEBIAN_FRONTEND=noninteractive
+          sudo -E apt-get update -o Acquire::Retries=5
+          sudo apt-get install -y curl libsqlite3-dev libssl-dev lsb-release \
+            pkg-config software-properties-common wget
+          wget --timeout=15 --tries=3 https://apt.llvm.org/llvm.sh
+          chmod +x llvm.sh
+          sudo -E ./llvm.sh 20
+          echo "/usr/lib/llvm-20/bin" >> "$GITHUB_PATH"
+          echo "CC=clang-20" >> "$GITHUB_ENV"
+
+      - name: Install locked Toka SDK
+        run: |
+          set -euo pipefail
+          archive="$RUNNER_TEMP/$TOKA_ARCHIVE"
+          curl --fail --location --retry 3 \
+            --output "$archive" \
+            "https://github.com/tokalang/toka/releases/download/$TOKA_VERSION/$TOKA_ARCHIVE"
+          echo "$TOKA_ARCHIVE_SHA256  $archive" | sha256sum --check --strict
+          tar -xzf "$archive" -C "$RUNNER_TEMP"
+          sdk="$RUNNER_TEMP/${TOKA_ARCHIVE%.tar.gz}"
+          test -x "$sdk/bin/toka"
+          test -x "$sdk/bin/tokac"
+          test -f "$sdk/lib/sys/toka_rt.o"
+          echo "TOKA=$sdk/bin/toka" >> "$GITHUB_ENV"
+          echo "TOKAC=$sdk/bin/tokac" >> "$GITHUB_ENV"
+          echo "TOKA_LIB=$sdk/lib" >> "$GITHUB_ENV"
+
+      - name: Qualify locked online and offline replay
+        working-directory: service-kit
+        run: python3 tests/qualify.py
