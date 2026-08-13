@@ -1,0 +1,47 @@
+import official/sqlite::{Database, Step, package_name}
+import std/io::{println}
+
+fn main() -> i32 {
+    if !package_name().equals("sqlite") { return 1 }
+
+    auto database# = Database::open(":memory:").unwrap()
+    if database#.execute(
+        "CREATE TABLE items (value INTEGER, label TEXT, note TEXT);"
+    ).is_err() {
+        return 2
+    }
+
+    auto insert# = database#.prepare("INSERT INTO items VALUES (?, ?, ?);").unwrap()
+    if insert#.bind_i64(1:i32, 41:i64).is_err() { return 3 }
+    if insert#.bind_text(2:i32, "registry").is_err() { return 4 }
+    if insert#.bind_null(3:i32).is_err() { return 5 }
+    if insert#.step().unwrap() != Step::Done { return 6 }
+    if insert#.finalize().is_err() { return 7 }
+
+    auto transaction# = database#.begin().unwrap()
+    if transaction#.execute(
+        "INSERT INTO items VALUES (42, 'committed', NULL);"
+    ).is_err() {
+        return 8
+    }
+    if transaction#.commit().is_err() { return 9 }
+
+    auto selected# = database#.prepare(
+        "SELECT value, label, note FROM items WHERE value = 41;"
+    ).unwrap()
+    if selected#.step().unwrap() != Step::Row { return 10 }
+    if selected.column_i64(0:i32).unwrap() != 41:i64 { return 11 }
+    if !selected.column_text(1:i32).unwrap().unwrap().equals("registry") { return 12 }
+    if !selected.column_text(2:i32).unwrap().is_none() { return 13 }
+    if selected#.step().unwrap() != Step::Done { return 14 }
+    if selected#.finalize().is_err() { return 15 }
+
+    auto count# = database#.prepare("SELECT COUNT(*) FROM items;").unwrap()
+    if count#.step().unwrap() != Step::Row { return 16 }
+    if count.column_i64(0:i32).unwrap() != 2:i64 { return 17 }
+    if count#.finalize().is_err() { return 18 }
+    if database#.close().is_err() || !database.is_closed() { return 19 }
+
+    println("public SQLite registry consumer passed")
+    return 0
+}
