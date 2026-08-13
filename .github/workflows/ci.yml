@@ -27,7 +27,7 @@ jobs:
           export DEBIAN_FRONTEND=noninteractive
           sudo -E apt-get update -o Acquire::Retries=5
           sudo apt-get install -y curl lsb-release pkg-config software-properties-common wget \
-            zlib1g-dev libzstd-dev libssl-dev
+            zlib1g-dev libzstd-dev libssl-dev libsqlite3-dev
           wget --timeout=15 --tries=3 https://apt.llvm.org/llvm.sh
           chmod +x llvm.sh
           sudo -E ./llvm.sh 20
@@ -82,3 +82,31 @@ jobs:
           TOKA_OFFLINE=1 toka build
           cmp package.lock "$RUNNER_TEMP/registry-compress-package.lock"
           ./target/debug/registry_compress_consumer
+
+      - name: Resolve and run SQLite registry consumer from a fresh cache
+        working-directory: registry_sqlite_consumer
+        run: |
+          set -euo pipefail
+          rm -rf target .toka
+          toka fetch
+          cp package.lock "$RUNNER_TEMP/registry-sqlite-package.lock"
+          test -f .toka/packages/sqlite-0.1.0/native/sqlite_preflight.c
+          toka build
+          test -n "$(find .toka/build/native -type f -name 'sqlite_preflight-*.o' -print -quit)"
+          ./target/debug/registry_sqlite_consumer
+
+      - name: Replay SQLite lock offline and rebuild its native object
+        working-directory: registry_sqlite_consumer
+        run: |
+          set -euo pipefail
+          test -n "$(find .toka/cache/archives -type f -print -quit)"
+          rm -rf target .toka/packages .toka/build
+          test ! -e .toka/build
+          TOKA_OFFLINE=1 toka fetch
+          cmp package.lock "$RUNNER_TEMP/registry-sqlite-package.lock"
+          test -f .toka/packages/sqlite-0.1.0/native/sqlite_preflight.c
+          test ! -e .toka/build/native
+          TOKA_OFFLINE=1 toka build
+          cmp package.lock "$RUNNER_TEMP/registry-sqlite-package.lock"
+          test -n "$(find .toka/build/native -type f -name 'sqlite_preflight-*.o' -print -quit)"
+          ./target/debug/registry_sqlite_consumer

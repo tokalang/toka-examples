@@ -20,6 +20,9 @@ reproducible build or qualification command.
 - [`registry_compress_consumer`](registry_compress_consumer) verifies the
   native Gzip, Zstd, and HTTP policy surfaces of the immutable compression
   package through online and offline lock replay.
+- [`registry_sqlite_consumer`](registry_sqlite_consumer) verifies the native
+  in-memory lifecycle, prepared statements, and transactions of the immutable
+  SQLite package through online and archive-only offline lock replay.
 
 ## License
 

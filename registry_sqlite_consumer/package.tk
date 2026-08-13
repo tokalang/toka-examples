@@ -1,0 +1,7 @@
+pub const PACKAGE = (
+    name = "registry_sqlite_consumer",
+    version = "0.1.0",
+    dependencies = (
+        sqlite = "sqlite:0.1.0",
+    )
+)
