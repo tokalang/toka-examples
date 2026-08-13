@@ -1,0 +1,46 @@
+name: Examples CI
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  TOKA_VERSION: v1.0.0-rc.4
+  TOKA_ARCHIVE: toka-v1.0.0-rc.4-linux-x64.tar.gz
+  TOKA_ARCHIVE_SHA256: fee16678f67bb88ace9b0f31603f9b56a24802de6d16a5bca60b3714dd4d30f6
+
+jobs:
+  registry-consumers:
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install locked Toka SDK
+        run: |
+          curl --fail --location --retry 3 \
+            --output "$RUNNER_TEMP/$TOKA_ARCHIVE" \
+            "https://github.com/tokalang/toka/releases/download/$TOKA_VERSION/$TOKA_ARCHIVE"
+          echo "$TOKA_ARCHIVE_SHA256  $RUNNER_TEMP/$TOKA_ARCHIVE" | sha256sum --check --strict
+          tar -xzf "$RUNNER_TEMP/$TOKA_ARCHIVE" -C "$RUNNER_TEMP"
+          sdk="$RUNNER_TEMP/${TOKA_ARCHIVE%.tar.gz}"
+          echo "$sdk/bin" >> "$GITHUB_PATH"
+          echo "TOKA_LIB=$sdk/lib" >> "$GITHUB_ENV"
+
+      - name: Build and run registry consumer
+        working-directory: registry_regex_consumer
+        run: |
+          toka build
+          ./target/debug/registry_regex_consumer
+
+      - name: Replay lock offline
+        working-directory: registry_regex_consumer
+        run: |
+          rm -rf target .toka/packages
+          TOKA_OFFLINE=1 toka build
+          ./target/debug/registry_regex_consumer
