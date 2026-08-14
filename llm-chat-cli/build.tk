@@ -1,0 +1,6 @@
+import build::{Executable, run_build}
+
+fn main() -> i32 {
+    auto app# = Executable::make(c"llm_chat_cli", c"main.tk")
+    return run_build(app)
+}
