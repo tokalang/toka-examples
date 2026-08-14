@@ -36,6 +36,10 @@ reproducible build or qualification command.
 - [`service-kit`](service-kit) demonstrates a registry-locked HTTP service
   composed from the Router and SQLite packages, with online and archive-only
   offline qualification.
+- [`csv-transform`](csv-transform) is a small file-to-file streaming CSV
+  application using the SDK's `stdx/data/csv` surface.
+- [`llm-chat-cli`](llm-chat-cli) is an opt-in streaming chat application using
+  the immutable `official/openai_compat` registry package.
 
 ## License
 
