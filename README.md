@@ -32,6 +32,10 @@ reproducible build or qualification command.
 - [`registry_postgres_consumer`](registry_postgres_consumer) verifies the
   bounded PostgreSQL wire codec and startup configuration of the immutable
   PostgreSQL package without requiring an external database server.
+- [`registry_redis_consumer`](registry_redis_consumer) verifies the
+  bounded Redis wire codec, pipeline, and pool configuration of the official
+  Redis package (`redis@0.2.0`) through online and archive-only offline
+  registry resolution.
 - [`registry_unicode_consumer`](registry_unicode_consumer) verifies Unicode
   grapheme segmentation, byte-offset mapping, and malformed UTF-8 reporting
   through online and archive-only offline registry resolution.
