@@ -1,0 +1,69 @@
+import official/redis::{
+    RedisClient, RedisCommand, RedisDecode, RedisPipeline, RedisPool, RedisValue,
+    decode_one, package_name
+}
+import std/io::{println}
+import std/net::{Ipv4Addr, SocketAddrV4}
+import std/vec::{Vec}
+
+fn main() -> i32 {
+    if !package_name().equals("redis") { return 1 }
+
+    auto cmd = RedisCommand::new("PING")
+    auto wire_res = cmd.into_wire()
+    if wire_res.is_err() { return 2 }
+    auto wire = wire_res.unwrap()
+    if wire.len() != 14:usize { return 2 }
+
+    auto get_cmd# = RedisCommand::new("GET")
+    get_cmd#.arg_text("session:42")
+    auto get_wire_res = get_cmd.into_wire()
+    if get_wire_res.is_err() { return 3 }
+    auto get_wire = get_wire_res.unwrap()
+    if get_wire.len() != 30:usize { return 3 }
+
+    auto partial# = Vec<u8>::new()
+    partial#.push('+' as u8)
+    partial#.push('P' as u8)
+    partial#.push('O' as u8)
+    match decode_one(cede partial).unwrap() {
+        auto RedisDecode::NeedMore() => {}
+        _ => return 4
+    }
+
+    auto full# = Vec<u8>::new()
+    full#.push('+' as u8)
+    full#.push('P' as u8)
+    full#.push('O' as u8)
+    full#.push('N' as u8)
+    full#.push('G' as u8)
+    full#.push('\r' as u8)
+    full#.push('\n' as u8)
+    match cede decode_one(cede full).unwrap() {
+        auto RedisDecode::Complete('decoded) => {
+            if 'decoded.consumed != 7:usize { return 5 }
+            match cede 'decoded.value {
+                auto RedisValue::SimpleString('text) => {
+                    if !'text.as_str().equals("PONG") { return 6 }
+                }
+                _ => return 7
+            }
+        }
+        _ => return 8
+    }
+
+    auto pipeline# = RedisPipeline::new()
+    pipeline#.push(cede RedisCommand::new("PING"))
+    pipeline#.push(cede RedisCommand::new("INFO"))
+
+    auto address = SocketAddrV4::new(
+        Ipv4Addr::new(127:u8, 0:u8, 0:u8, 1:u8), 6379:u16
+    )
+    auto pool = RedisPool::new(address, 5000:i32, 4:usize)
+    if pool.is_err() { return 9 }
+    auto p# = pool.unwrap()
+    p#.close()
+
+    println("public Redis registry consumer passed")
+    return 0
+}

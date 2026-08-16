@@ -400,3 +400,82 @@ jobs:
           otool -L target/debug/registry_gui_consumer | grep -F 'AppKit.framework/'
           otool -L target/debug/registry_gui_consumer | grep -F 'Metal.framework/'
           otool -L target/debug/registry_gui_consumer | grep -F 'QuartzCore.framework/'
+
+  registry-redis-consumer:
+    name: Redis registry consumer (linux-x64, rc5)
+    runs-on: ubuntu-22.04
+    timeout-minutes: 20
+    env:
+      TOKA_VERSION: v1.0.0-rc.5
+      TOKA_ARCHIVE: toka-v1.0.0-rc.5-linux-x64.tar.gz
+      TOKA_ARCHIVE_SHA256: 16d5c2202553915aeb25fd3e5957fad15d86c460da00639fbba2af13bb2daedf
+      REDIS_ARCHIVE_SHA256: 3d397581317dbab1fe8fb3acb7f85fc0c30be3c9526e1593327bf4e34df61e1f
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install native package dependencies
+        run: |
+          set -euo pipefail
+          export DEBIAN_FRONTEND=noninteractive
+          sudo -E apt-get update -o Acquire::Retries=5
+          sudo apt-get install -y curl lsb-release pkg-config software-properties-common wget \
+            libssl-dev
+          wget --timeout=15 --tries=3 https://apt.llvm.org/llvm.sh
+          chmod +x llvm.sh
+          sudo -E ./llvm.sh 20
+          echo "/usr/lib/llvm-20/bin" >> "$GITHUB_PATH"
+          echo "CC=clang-20" >> "$GITHUB_ENV"
+
+      - name: Install locked Toka SDK
+        run: |
+          set -euo pipefail
+          curl --fail --location --retry 3 \
+            --output "$RUNNER_TEMP/$TOKA_ARCHIVE" \
+            "https://github.com/tokalang/toka/releases/download/$TOKA_VERSION/$TOKA_ARCHIVE"
+          echo "$TOKA_ARCHIVE_SHA256  $RUNNER_TEMP/$TOKA_ARCHIVE" | sha256sum --check --strict
+          tar -xzf "$RUNNER_TEMP/$TOKA_ARCHIVE" -C "$RUNNER_TEMP"
+          sdk="$RUNNER_TEMP/${TOKA_ARCHIVE%.tar.gz}"
+          echo "$sdk/bin" >> "$GITHUB_PATH"
+          echo "TOKA_LIB=$sdk/lib" >> "$GITHUB_ENV"
+
+      - name: Resolve and run Redis registry consumer from a fresh cache
+        working-directory: registry_redis_consumer
+        run: |
+          set -euo pipefail
+          rm -rf target .toka
+          rm -f .toka_build_exe
+          cp package.lock "$RUNNER_TEMP/registry-redis-package.lock"
+          toka fetch
+          cmp package.lock "$RUNNER_TEMP/registry-redis-package.lock"
+          test -f .toka/packages/redis-0.2.0/lib/official/redis.tk
+          test -f ".toka/cache/archives/$REDIS_ARCHIVE_SHA256.tar.gz"
+          echo "$REDIS_ARCHIVE_SHA256  .toka/cache/archives/$REDIS_ARCHIVE_SHA256.tar.gz" | sha256sum --check --strict
+          toka build
+          cmp package.lock "$RUNNER_TEMP/registry-redis-package.lock"
+          test -x target/debug/registry_redis_consumer
+          ./target/debug/registry_redis_consumer
+
+      - name: Replay Redis lock offline from its archive only
+        working-directory: registry_redis_consumer
+        run: |
+          set -euo pipefail
+          archive="$RUNNER_TEMP/redis-$REDIS_ARCHIVE_SHA256.tar.gz"
+          cp ".toka/cache/archives/$REDIS_ARCHIVE_SHA256.tar.gz" "$archive"
+          rm -rf target .toka
+          rm -f .toka_build_exe
+          mkdir -p .toka/cache/archives
+          cp "$archive" ".toka/cache/archives/$REDIS_ARCHIVE_SHA256.tar.gz"
+          test ! -e target
+          test ! -e .toka/packages
+          test ! -e .toka/build
+          test ! -e .toka_build_exe
+          test "$(find .toka -type f | wc -l | tr -d ' ')" = 1
+          echo "$REDIS_ARCHIVE_SHA256  .toka/cache/archives/$REDIS_ARCHIVE_SHA256.tar.gz" | sha256sum --check --strict
+          TOKA_OFFLINE=1 toka fetch
+          cmp package.lock "$RUNNER_TEMP/registry-redis-package.lock"
+          test -f .toka/packages/redis-0.2.0/lib/official/redis.tk
+          TOKA_OFFLINE=1 toka build
+          cmp package.lock "$RUNNER_TEMP/registry-redis-package.lock"
+          test -x target/debug/registry_redis_consumer
+          ./target/debug/registry_redis_consumer
