@@ -58,8 +58,16 @@ def find_sdk() -> tuple[Path, Path, Path]:
     raise RuntimeError("Could not find Toka SDK: set TOKA_SDK or add toka/tokac to PATH and set TOKA_LIB")
 
 
-def run_cmd(cmd: list[str], cwd: Path | None = None, env: dict[str, str] | None = None) -> subprocess.CompletedProcess[str]:
+def run_cmd(
+    cmd: list[str],
+    cwd: Path | None = None,
+    env: dict[str, str] | None = None,
+    unset_env_keys: list[str] | None = None
+) -> subprocess.CompletedProcess[str]:
     exec_env = os.environ.copy()
+    if unset_env_keys:
+        for k in unset_env_keys:
+            exec_env.pop(k, None)
     if env:
         exec_env.update(env)
     res = subprocess.run(
@@ -103,30 +111,20 @@ def assert_lockfile_tsv() -> None:
     assert LOCK_FILE.is_file(), f"package.lock not found at {LOCK_FILE}"
     content = LOCK_FILE.read_text(encoding="utf-8")
     lines = [line.strip() for line in content.splitlines() if line.strip() and not line.startswith("#")]
-    assert len(lines) >= 2, "Lockfile is empty or missing package records"
+    assert len(lines) == 2, f"Lockfile must contain exactly header and 1 package row, got {len(lines)} lines:\n{content}"
     assert lines[0] == "toka-lock-v1", f"Expected toka-lock-v1 header, got {lines[0]}"
 
-    records = {}
-    for line in lines[1:]:
-        fields = line.split("\t")
-        assert len(fields) == 8, f"Expected 8 TSV fields in lockfile row, got {len(fields)}: {line}"
-        record_type, binding, source_type, pkg_name, version, tarball_sha, tree_hash, deps = fields
-        assert record_type == "package"
-        assert source_type == "registry"
-        records[binding] = {
-            "source_type": source_type,
-            "pkg_name": pkg_name,
-            "version": version,
-            "tarball_sha": tarball_sha,
-            "deps": deps
-        }
-
-    assert "task_runner" in records or "task-runner" in records, "task_runner record missing from lockfile"
-    rec = records.get("task_runner") or records.get("task-runner")
-    assert rec["version"] == EXPECTED_TASK_RUNNER_VERSION
-    assert rec["tarball_sha"] == EXPECTED_TASK_RUNNER_ARCHIVE_SHA256
-    assert rec["deps"] == "-"
-    log("Strict 8-field toka-lock-v1 structure for task-runner verified successfully.")
+    fields = lines[1].split("\t")
+    assert len(fields) == 8, f"Expected 8 TSV fields in lockfile row, got {len(fields)}: {lines[1]}"
+    record_type, binding, source_type, pkg_name, version, tarball_sha, tree_hash, deps = fields
+    assert record_type == "package", f"Expected record_type 'package', got '{record_type}'"
+    assert binding == "task_runner", f"Expected binding 'task_runner', got '{binding}'"
+    assert source_type == "registry", f"Expected source_type 'registry', got '{source_type}'"
+    assert pkg_name == "task-runner", f"Expected pkg_name 'task-runner', got '{pkg_name}'"
+    assert version == EXPECTED_TASK_RUNNER_VERSION, f"Expected version '{EXPECTED_TASK_RUNNER_VERSION}', got '{version}'"
+    assert tarball_sha == EXPECTED_TASK_RUNNER_ARCHIVE_SHA256, f"Expected archive sha '{EXPECTED_TASK_RUNNER_ARCHIVE_SHA256}', got '{tarball_sha}'"
+    assert deps == "-", f"Expected direct deps '-', got '{deps}'"
+    log("Strict 8-field toka-lock-v1 structure (exact single task_runner entry) verified successfully.")
 
 
 def build_task_runner(tokac: Path, sdk_lib: Path) -> Path:
@@ -192,7 +190,7 @@ def main() -> int:
     wait_for_catalog_deployment()
 
     log("=== Step 1: Online Resolution and Lock Generation ===")
-    run_cmd([str(toka), "fetch"], cwd=ROOT)
+    run_cmd([str(toka), "fetch"], cwd=ROOT, env={"TOKA_OFFLINE": "0"}, unset_env_keys=["TOKA_REGISTRY_URL"])
     assert_lockfile_tsv()
 
     # Step 2: Build task-runner binary
@@ -230,14 +228,18 @@ def main() -> int:
     log("All 4 application consumer verification tasks executed successfully under task-runner DAG.")
 
     # Step 5: Offline Replay Verification for task-runner
-    log("=== Step 5: task-runner Offline Cache Replay (TOKA_OFFLINE=1) ===")
+    log("=== Step 5: task-runner Offline Cache Replay (TOKA_OFFLINE=1 & Unreachable Registry URL) ===")
     packages_dir = TOKA_DIR / "packages"
     assert packages_dir.is_dir(), "packages dir must exist before offline replay test"
     shutil.rmtree(packages_dir)
     shutil.rmtree(TARGET_DIR, ignore_errors=True)
 
-    # Fetch offline
-    run_cmd([str(toka), "fetch"], cwd=ROOT, env={"TOKA_OFFLINE": "1"})
+    # Fetch offline with unroutable registry URL (guaranteeing 0 network fallback)
+    run_cmd(
+        [str(toka), "fetch"],
+        cwd=ROOT,
+        env={"TOKA_OFFLINE": "1", "TOKA_REGISTRY_URL": "http://127.0.0.1:9"}
+    )
     assert (packages_dir / f"task_runner-{EXPECTED_TASK_RUNNER_VERSION}").is_dir() or (packages_dir / f"task-runner-{EXPECTED_TASK_RUNNER_VERSION}").is_dir(), "task-runner was not unpacked from local cache in offline mode"
 
     # Rebuild & test plan in offline mode
