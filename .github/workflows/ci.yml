@@ -16,8 +16,8 @@ env:
   TOKA_ARCHIVE_SHA256: fee16678f67bb88ace9b0f31603f9b56a24802de6d16a5bca60b3714dd4d30f6
   ROUTER_ARCHIVE_SHA256: efc154757556e37ffbc7891481c6031ccc6b0161e3ea391e4a100080e407ed78
   ROUTER_CONTENT_SHA256: f5dcfab01ba3e4dbecbcea5e334673c3fc5fdf1b95c76f1c90d0c55ae30d0a1c
-  OPENAI_COMPAT_ARCHIVE_SHA256: 8c3d139e0a4147f0f6bfcc73da623a5eeac670543af86468350c27fb5c13a457
-  OPENAI_COMPAT_CONTENT_SHA256: b4a4274ef34ac6773a95ca0cdc5974d38987bb29dcba4e35820c51fc857f2a35
+  OPENAI_COMPAT_ARCHIVE_SHA256: 66ffdeaa84620d1b62f8874e6a974716b9d1bb93430bcd8b5ce0c3921b70d177
+  OPENAI_COMPAT_CONTENT_SHA256: 766f31f7f0927d1329065456648ffe18daca2cf03cfa5da95f2136b5448a2fd3
 
 jobs:
   registry-consumers:
@@ -121,7 +121,7 @@ jobs:
           cp package.lock "$RUNNER_TEMP/registry-openai-compat-package.lock"
           test "$(sed -n '1p' package.lock)" = "toka-lock-v1"
           test "$(wc -l < package.lock | tr -d ' ')" = 2
-          expected="$(printf 'package\topenai_compat\tregistry\topenai_compat\t0.1.1\t%s\t%s\t-' \
+          expected="$(printf 'package\topenai_compat\tregistry\topenai_compat\t0.1.2\t%s\t%s\t-' \
             "$OPENAI_COMPAT_ARCHIVE_SHA256" "$OPENAI_COMPAT_CONTENT_SHA256")"
           test "$(sed -n '2p' package.lock)" = "$expected"
           toka fetch
@@ -129,7 +129,7 @@ jobs:
           test "$(find .toka/cache/archives -type f | wc -l | tr -d ' ')" = 1
           test -f ".toka/cache/archives/$OPENAI_COMPAT_ARCHIVE_SHA256.tar.gz"
           echo "$OPENAI_COMPAT_ARCHIVE_SHA256  .toka/cache/archives/$OPENAI_COMPAT_ARCHIVE_SHA256.tar.gz" | sha256sum --check --strict
-          test -f .toka/packages/openai_compat-0.1.1/lib/official/openai_compat.tk
+          test -f .toka/packages/openai_compat-0.1.2/lib/official/openai_compat.tk
           toka build
           cmp package.lock "$RUNNER_TEMP/registry-openai-compat-package.lock"
           test -x target/debug/registry_openai_compat_consumer
@@ -153,7 +153,7 @@ jobs:
           echo "$OPENAI_COMPAT_ARCHIVE_SHA256  .toka/cache/archives/$OPENAI_COMPAT_ARCHIVE_SHA256.tar.gz" | sha256sum --check --strict
           TOKA_OFFLINE=1 toka fetch
           cmp package.lock "$RUNNER_TEMP/registry-openai-compat-package.lock"
-          test -f .toka/packages/openai_compat-0.1.1/lib/official/openai_compat.tk
+          test -f .toka/packages/openai_compat-0.1.2/lib/official/openai_compat.tk
           TOKA_OFFLINE=1 toka build
           cmp package.lock "$RUNNER_TEMP/registry-openai-compat-package.lock"
           test -x target/debug/registry_openai_compat_consumer
