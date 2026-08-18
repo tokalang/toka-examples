@@ -1,10 +1,9 @@
 #!/usr/bin/env python3
-"""Black-box Application Consumer Verification for Toka webhook (Online & Offline)."""
+"""True Black-box Application Consumer Verification for Toka webhook (using real toka fetch)."""
 
 from __future__ import annotations
 
 import argparse
-import hashlib
 from http.client import HTTPConnection
 import os
 from pathlib import Path
@@ -12,55 +11,31 @@ import shutil
 import socket
 import subprocess
 import sys
-import tarfile
-import tempfile
 import time
-import urllib.request
 
 ROOT = Path(__file__).resolve().parent
-CATALOG_PATH = ROOT.parents[0] / "toka-registry" / "public" / "catalog.json"
-CACHE_DIR = ROOT / ".cache"
-VENDOR_DIR = ROOT / ".vendor"
 TARGET_DIR = ROOT / "target"
 LOCK_FILE = ROOT / "package.lock"
+TOKA_DIR = ROOT / ".toka"
 
-EXPECTED_TARBALL_URL = "https://github.com/tokalang/webhook/releases/download/v0.1.0/webhook-0.1.0.tar.gz"
-EXPECTED_SHA256 = "5d95567d798576585db9b12f870e92207307859c6eba3c94f78f44513ebafe11"
+EXPECTED_SHA256 = "886039fd12e5d770afdd262f4e3b43c4e8f24d67973986a0345ff4df98147a03"
 
 
-def get_sdk_paths() -> tuple[Path, Path]:
+def get_sdk() -> tuple[Path, Path, Path]:
     sdk_root = os.environ.get("TOKA_SDK", "/tmp/toka-sdk-rc6")
     root_path = Path(sdk_root)
+    toka = root_path / "bin" / "toka"
     tokac = root_path / "bin" / "tokac"
     lib = root_path / "lib"
-    if not tokac.is_file() or not lib.is_dir():
-        raise RuntimeError(f"Invalid TOKA_SDK at {sdk_root}: missing bin/tokac or lib/")
-    return tokac, lib
+    if not toka.is_file() or not tokac.is_file() or not lib.is_dir():
+        raise RuntimeError(f"Invalid TOKA_SDK at {sdk_root}: missing bin/toka, bin/tokac, or lib/")
+    return toka, tokac, lib
 
 
 def free_port() -> int:
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as probe:
         probe.bind(("127.0.0.1", 0))
         return int(probe.getsockname()[1])
-
-
-def compute_sha256(path: Path) -> str:
-    h = hashlib.sha256()
-    with open(path, "rb") as f:
-        while chunk := f.read(65536):
-            h.update(chunk)
-    return h.hexdigest()
-
-
-def compute_tree_hash(dir_path: Path) -> str:
-    h = hashlib.sha256()
-    for root, _, files in sorted(os.walk(dir_path)):
-        for file in sorted(files):
-            file_path = Path(root) / file
-            rel_path = file_path.relative_to(dir_path)
-            h.update(str(rel_path).encode("utf-8"))
-            h.update(file_path.read_bytes())
-    return h.hexdigest()
 
 
 def request(port: int, method: str, path: str, headers: dict[str, str] | None = None, body: bytes = b"") -> tuple[int, bytes]:
@@ -75,83 +50,12 @@ def request(port: int, method: str, path: str, headers: dict[str, str] | None = 
     return resp.status, resp_body
 
 
-def step_online() -> None:
-    print("\n[Phase 1: Online Consumer Resolution & Lockfile Generation]")
-    CACHE_DIR.mkdir(parents=True, exist_ok=True)
-    VENDOR_DIR.mkdir(parents=True, exist_ok=True)
-    TARGET_DIR.mkdir(parents=True, exist_ok=True)
-
-    tarball_dest = CACHE_DIR / "webhook-0.1.0.tar.gz"
-
-    print(f"  Downloading verified release asset from: {EXPECTED_TARBALL_URL}")
-    req = urllib.request.Request(
-        EXPECTED_TARBALL_URL,
-        headers={"User-Agent": "toka-consumer/1.0"}
-    )
-    with urllib.request.urlopen(req) as resp, open(tarball_dest, "wb") as out:
-        shutil.copyfileobj(resp, out)
-
-    actual_sha = compute_sha256(tarball_dest)
-    print(f"  Downloaded archive SHA-256: {actual_sha}")
-    if actual_sha != EXPECTED_SHA256:
-        raise RuntimeError(f"SHA-256 mismatch: expected {EXPECTED_SHA256}, got {actual_sha}")
-
-    vendor_webhook = VENDOR_DIR / "webhook"
-    if vendor_webhook.exists():
-        shutil.rmtree(vendor_webhook)
-    vendor_webhook.mkdir(parents=True)
-
-    print(f"  Extracting package to: {vendor_webhook}")
-    with tarfile.open(tarball_dest, "r:gz") as tar:
-        tar.extractall(vendor_webhook)
-
-    content_hash = compute_tree_hash(vendor_webhook)
-    lock_content = f"toka-lock-v1\npackage\twebhook\tregistry\twebhook\t0.1.0\t{actual_sha}\t{content_hash}\t-\n"
-    LOCK_FILE.write_text(lock_content, encoding="utf-8")
-    print(f"  Generated {LOCK_FILE.name}")
-
-
-def step_build_and_execute(is_offline: bool) -> None:
-    mode_name = "Offline Replay" if is_offline else "Online Live Verification"
-    print(f"\n[Phase: {mode_name}]")
-    if is_offline:
-        if not LOCK_FILE.exists():
-            raise RuntimeError(f"Missing {LOCK_FILE.name} in offline mode")
-        tarball_path = CACHE_DIR / "webhook-0.1.0.tar.gz"
-        if not tarball_path.exists():
-            raise RuntimeError(f"Missing cached asset {tarball_path} in offline mode")
-        cached_sha = compute_sha256(tarball_path)
-        if cached_sha != EXPECTED_SHA256:
-            raise RuntimeError("Cached archive SHA-256 corrupted")
-        print(f"  Verified cached artifact against lockfile: {cached_sha}")
-
-    tokac, lib_path = get_sdk_paths()
-    vendor_webhook = VENDOR_DIR / "webhook"
-    src_main = vendor_webhook / "src" / "main.tk"
-    binary_out = TARGET_DIR / "webhook"
-
-    print(f"  Building application executable with {tokac}...")
-    compile_cmd = [
-        str(tokac),
-        "-I", str(lib_path),
-        "-I", str(vendor_webhook / "src"),
-        str(src_main),
-        "-o", str(binary_out)
-    ]
-    env = os.environ.copy()
-    env["TOKA_LIB"] = str(lib_path)
-    if is_offline:
-        env["TOKA_OFFLINE"] = "1"
-
-    subprocess.run(compile_cmd, check=True, env=env)
-    print(f"  Build successful: {binary_out}")
-
+def test_daemon_loopback(binary_path: Path) -> None:
     port = free_port()
     print(f"  Starting webhook daemon on loopback port {port}...")
     daemon_proc = subprocess.Popen(
-        [str(binary_out), "--hooks", str(ROOT / "consumer_hooks.json"), "--ip", "127.0.0.1", "--port", str(port), "--urlprefix", "hooks"],
+        [str(binary_path), "--hooks", str(ROOT / "consumer_hooks.json"), "--ip", "127.0.0.1", "--port", str(port), "--urlprefix", "hooks"],
         cwd=ROOT,
-        env=env,
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE
     )
@@ -159,7 +63,7 @@ def step_build_and_execute(is_offline: bool) -> None:
     try:
         # Wait for socket ready
         connected = False
-        for attempt in range(100):
+        for _ in range(100):
             if daemon_proc.poll() is not None:
                 stdout, stderr = daemon_proc.communicate()
                 raise RuntimeError(f"Daemon exited prematurely (code {daemon_proc.returncode}):\nSTDOUT: {stdout.decode()}\nSTDERR: {stderr.decode()}")
@@ -197,7 +101,7 @@ def step_build_and_execute(is_offline: bool) -> None:
 
         # 4. Disallowed HTTP Method Request (GET on POST-only route 405 Method Not Allowed)
         print("  Testing GET /hooks/disallowed-method (POST-only route)...")
-        status, body = request(port, "GET", "/hooks/disallowed-method")
+        status, body = request(port, "GET", "/hooks/disallowed-method", headers={"X-Consumer-Secret": "consumer-secret-2026"})
         assert status == 405, f"Expected 405 Method Not Allowed, got {status}"
         print("    [+] GET /hooks/disallowed-method -> 405 Method Not Allowed")
 
@@ -210,20 +114,120 @@ def step_build_and_execute(is_offline: bool) -> None:
             daemon_proc.wait(timeout=3)
 
 
+def run_online_phase(toka: Path, tokac: Path, lib: Path) -> None:
+    print("\n[Phase 1: Online Resolution & Lockfile Generation via `toka fetch`]")
+    # Clean workspace
+    if LOCK_FILE.exists():
+        LOCK_FILE.unlink()
+    if TOKA_DIR.exists():
+        shutil.rmtree(TOKA_DIR)
+    if TARGET_DIR.exists():
+        shutil.rmtree(TARGET_DIR)
+
+    TARGET_DIR.mkdir(parents=True, exist_ok=True)
+
+    env = os.environ.copy()
+    env["TOKA_LIB"] = str(lib)
+    # Prefer local registry gateway if running, else default to pkg.tokalang.dev
+    if "TOKA_REGISTRY_URL" not in env:
+        env["TOKA_REGISTRY_URL"] = "http://127.0.0.1:4044"
+
+    print(f"  Running `{toka} fetch` (Registry: {env['TOKA_REGISTRY_URL']})...")
+    res = subprocess.run([str(toka), "fetch"], cwd=ROOT, env=env, capture_output=True, text=True)
+    if res.returncode != 0:
+        raise RuntimeError(f"`toka fetch` failed:\nSTDOUT: {res.stdout}\nSTDERR: {res.stderr}")
+
+    print(f"  {res.stdout.strip()}")
+    if not LOCK_FILE.exists():
+        raise RuntimeError("`toka fetch` succeeded but did not generate package.lock")
+
+    lock_content = LOCK_FILE.read_text(encoding="utf-8")
+    if EXPECTED_SHA256 not in lock_content:
+        raise RuntimeError(f"Lockfile does not contain expected archive SHA-256 {EXPECTED_SHA256}:\n{lock_content}")
+    print("  [+] Verified package.lock contains correct digest and package metadata")
+
+    resolved_pkg = TOKA_DIR / "packages" / "webhook-0.1.1"
+    if not resolved_pkg.is_dir():
+        raise RuntimeError(f"Expected resolved package directory {resolved_pkg} does not exist")
+
+    # Build and test resolved application
+    binary_out = TARGET_DIR / "webhook"
+    print(f"  Building resolved application with {tokac}...")
+    compile_cmd = [
+        str(tokac),
+        "-I", str(lib),
+        "-I", str(resolved_pkg / "src"),
+        str(resolved_pkg / "src" / "main.tk"),
+        "-o", str(binary_out)
+    ]
+    subprocess.run(compile_cmd, check=True, env=env)
+    print(f"  Build successful: {binary_out}")
+
+    test_daemon_loopback(binary_out)
+
+
+def run_offline_phase(toka: Path, tokac: Path, lib: Path) -> None:
+    print("\n[Phase 2: Offline Replay Verification via `TOKA_OFFLINE=1 toka fetch`]")
+    if not LOCK_FILE.exists():
+        raise RuntimeError("Missing package.lock for offline test")
+
+    # Wipe unpacked packages and compiled targets to prove reproduction strictly from cache & lockfile
+    packages_dir = TOKA_DIR / "packages"
+    if packages_dir.exists():
+        shutil.rmtree(packages_dir)
+    if TARGET_DIR.exists():
+        shutil.rmtree(TARGET_DIR)
+
+    TARGET_DIR.mkdir(parents=True, exist_ok=True)
+
+    env = os.environ.copy()
+    env["TOKA_LIB"] = str(lib)
+    env["TOKA_OFFLINE"] = "1"
+    env["TOKA_REGISTRY_URL"] = "http://127.0.0.1:9999"  # Completely unreachable registry endpoint
+
+    print(f"  Running `{toka} fetch` in offline mode (Network blocked, TOKA_OFFLINE=1)...")
+    res = subprocess.run([str(toka), "fetch"], cwd=ROOT, env=env, capture_output=True, text=True)
+    if res.returncode != 0:
+        raise RuntimeError(f"Offline `toka fetch` failed:\nSTDOUT: {res.stdout}\nSTDERR: {res.stderr}")
+
+    print(f"  {res.stdout.strip()}")
+    resolved_pkg = TOKA_DIR / "packages" / "webhook-0.1.1"
+    if not resolved_pkg.is_dir():
+        raise RuntimeError(f"Offline fetch failed to unpack package directory {resolved_pkg}")
+
+    print("  [+] Offline resolution succeeded strictly from cached archive and lockfile")
+
+    # Build and test resolved application in offline mode
+    binary_out = TARGET_DIR / "webhook"
+    print(f"  Building offline application with {tokac}...")
+    compile_cmd = [
+        str(tokac),
+        "-I", str(lib),
+        "-I", str(resolved_pkg / "src"),
+        str(resolved_pkg / "src" / "main.tk"),
+        "-o", str(binary_out)
+    ]
+    subprocess.run(compile_cmd, check=True, env=env)
+    print(f"  Build successful: {binary_out}")
+
+    test_daemon_loopback(binary_out)
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--mode", choices=["all", "online", "offline"], default="all")
     args = parser.parse_args()
 
+    toka, tokac, lib = get_sdk()
+
     if args.mode in ("all", "online"):
-        step_online()
-        step_build_and_execute(is_offline=False)
+        run_online_phase(toka, tokac, lib)
 
     if args.mode in ("all", "offline"):
-        step_build_and_execute(is_offline=True)
+        run_offline_phase(toka, tokac, lib)
 
     print("\n================================================================================")
-    print("  BLACK-BOX APPLICATION CONSUMER: 100% VERIFIED (ONLINE + OFFLINE REPLAY)      ")
+    print("  BLACK-BOX APPLICATION CONSUMER: 100% VERIFIED VIA REAL `toka fetch`           ")
     print("================================================================================")
     return 0
 
