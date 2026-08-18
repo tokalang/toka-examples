@@ -19,8 +19,8 @@ TARGET_DIR = ROOT / "target"
 LOCK_FILE = ROOT / "package.lock"
 TOKA_DIR = ROOT / ".toka"
 
-EXPECTED_SHA256 = "087ff3cd90b6b0db7fdb0a197377ccfe3251c8498f10f9893fa603c319f1bcc8"
-EXPECTED_VERSION = "0.1.1"
+EXPECTED_SHA256 = "3167714c0c651dfc7a6c9b85dfe5e33b4bdeec2ce13772598289314690919531"
+EXPECTED_VERSION = "0.1.2"
 
 
 def log(msg: str) -> None:
@@ -52,8 +52,8 @@ def wait_for_catalog_deployment(max_wait_secs: int = 60) -> None:
                     runner_pkg = next((p for p in packages if p.get("name") == "task-runner"), None)
                     if runner_pkg:
                         versions = runner_pkg.get("versions", [])
-                        v011 = next((v for v in versions if v.get("version") == EXPECTED_VERSION), None)
-                        if v011 and v011.get("sha256") == EXPECTED_SHA256:
+                        v012 = next((v for v in versions if v.get("version") == EXPECTED_VERSION), None)
+                        if v012 and v012.get("sha256") == EXPECTED_SHA256:
                             log(f"  [+] Confirmed task-runner@{EXPECTED_VERSION} is live on pkg.tokalang.dev")
                             return
         except Exception as e:
@@ -124,11 +124,33 @@ tasks:
         assert "Result: SUCCESS" in exec_res.stdout, "Execution failed"
         assert "consumer workflow step 2" in exec_res.stdout, "Echo step did not run"
 
-    # 3. v0.1.1 Specific Behavioral Assertions (Global Pre-flight, Lexical CWD, String ENV)
-    log("  Testing v0.1.1 behavioral fixes in resolved binary...")
+    # 3. v0.1.2 Deterministic Lexicographical Tie-breaking
+    log("  Testing v0.1.2 deterministic lexicographical tie-breaking...")
+    with tempfile.TemporaryDirectory(prefix="consumer-lexicographical-") as tmp_dir:
+        lex_yaml = os.path.join(tmp_dir, "lex.yaml")
+        with open(lex_yaml, "w") as f:
+            f.write("""version: 1
+tasks:
+  zebra:
+    program: "/usr/bin/true"
+  middle:
+    program: "/usr/bin/true"
+  alpha:
+    program: "/usr/bin/true"
+""")
+        res = run_cmd([str(binary_path), "-f", lex_yaml, "--plan"])
+        out = res.stdout
+        idx_alpha = out.find("1. alpha")
+        idx_middle = out.find("2. middle")
+        idx_zebra = out.find("3. zebra")
+        assert idx_alpha != -1 and idx_middle != -1 and idx_zebra != -1, "Lex plan missing tasks"
+        assert idx_alpha < idx_middle < idx_zebra, f"Lexicographical ordering failed:\n{out}"
+
+    # 4. Behavioral Assertions (Pre-flight, Lexical CWD, String ENV, Duplicate-key)
+    log("  Testing schema and pre-flight assertions in resolved binary...")
     
     # Assertion A: Unrelated broken dependency must abort execution before child processes
-    with tempfile.TemporaryDirectory(prefix="consumer-v011-preflight-") as tmp_dir:
+    with tempfile.TemporaryDirectory(prefix="consumer-preflight-") as tmp_dir:
         marker_file = os.path.join(tmp_dir, "must_never_exist.txt")
         broken_yaml = os.path.join(tmp_dir, "broken.yaml")
         with open(broken_yaml, "w") as f:
@@ -147,7 +169,7 @@ tasks:
         assert "ghost_dependency" in res.stdout or "ghost_dependency" in res.stderr
 
     # Assertion B: Absolute cwd rejection
-    with tempfile.TemporaryDirectory(prefix="consumer-v011-cwd-") as tmp_dir:
+    with tempfile.TemporaryDirectory(prefix="consumer-cwd-") as tmp_dir:
         abs_yaml = os.path.join(tmp_dir, "abs_cwd.yaml")
         with open(abs_yaml, "w") as f:
             f.write("""version: 1
@@ -161,7 +183,7 @@ tasks:
         assert "must be a relative path" in res.stdout or "must be a relative path" in res.stderr
 
     # Assertion C: Non-string env rejection
-    with tempfile.TemporaryDirectory(prefix="consumer-v011-env-") as tmp_dir:
+    with tempfile.TemporaryDirectory(prefix="consumer-env-") as tmp_dir:
         env_yaml = os.path.join(tmp_dir, "bad_env.yaml")
         with open(env_yaml, "w") as f:
             f.write("""version: 1
@@ -175,7 +197,21 @@ tasks:
         assert res.returncode == 1, "Expected rejection for non-string env"
         assert "must be a string" in res.stdout or "must be a string" in res.stderr
 
-    log("  [+] Blackbox workflow and v0.1.1 behavioral assertions passed successfully!")
+    # Assertion D: Duplicate task key rejection
+    with tempfile.TemporaryDirectory(prefix="consumer-dup-") as tmp_dir:
+        dup_yaml = os.path.join(tmp_dir, "dup.yaml")
+        with open(dup_yaml, "w") as f:
+            f.write("""version: 1
+tasks:
+  task_dup:
+    program: "/usr/bin/true"
+  task_dup:
+    program: "/usr/bin/true"
+""")
+        res = run_cmd([str(binary_path), "-f", dup_yaml], check=False)
+        assert res.returncode == 1, "Expected rejection for duplicate task key"
+
+    log("  [+] All consumer blackbox workflow and v0.1.2 behavioral assertions passed successfully!")
 
 
 def main() -> int:
