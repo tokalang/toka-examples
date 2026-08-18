@@ -1,0 +1,23 @@
+version: 1
+
+tasks:
+  verify_notifier:
+    program: python3
+    args: ["verify_consumer.py"]
+    cwd: "notifier_app_consumer"
+
+  verify_sqlite:
+    program: python3
+    args: ["verify_consumer.py"]
+    cwd: "registry_sqlite_consumer"
+
+  verify_migrate:
+    needs: ["verify_sqlite"]
+    program: python3
+    args: ["verify_consumer.py"]
+    cwd: "migrate_app_consumer"
+
+  verify_webhook:
+    program: python3
+    args: ["verify_consumer.py"]
+    cwd: "webhook_app_consumer"

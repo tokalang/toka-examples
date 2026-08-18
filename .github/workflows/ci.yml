@@ -539,3 +539,15 @@ jobs:
           set -euo pipefail
           python3 verify_consumer.py
 
+      - name: Verify webhook@0.1.1 application consumer on RC6 toolchain (Online & Offline)
+        working-directory: webhook_app_consumer
+        run: |
+          set -euo pipefail
+          python3 verify_consumer.py
+
+      - name: Verify composed release pipeline via task-runner@0.1.2 (DAG orchestration)
+        working-directory: composed_release_pipeline
+        run: |
+          set -euo pipefail
+          python3 verify_composed.py
+
