@@ -1,0 +1,7 @@
+pub const PACKAGE = (
+    name = "registry_mysql_consumer",
+    version = "0.1.0",
+    dependencies = (
+        mysql = "mysql:0.1.0",
+    )
+)

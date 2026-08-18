@@ -1,0 +1,33 @@
+import official/mysql::{
+    package_name, MysqlConfig, MysqlQueryLimits, scramble_native_password,
+    scramble_caching_sha2_password, MysqlParam, MysqlValue
+}
+import std/io::{println}
+import std/vec::{Vec}
+
+fn main() -> i32 {
+    if !package_name().as_str().equals("mysql") { return 1 }
+
+    auto cfg = MysqlConfig::trusted_local("root", "testdb", "secret")
+    if cfg.max_open != 10:usize { return 2 }
+    if cfg.max_idle != 5:usize { return 3 }
+
+    auto limits = MysqlQueryLimits(max_rows = 100:usize, max_bytes = 1048576:usize)
+    if limits.max_rows != 100:usize { return 4 }
+
+    auto auth_data# = Vec<u8>::new()
+    auto i# = 0:usize
+    loop i < 20:usize {
+        auth_data#.push(65:u8 + (i as u8))
+        i = i + 1:usize
+    }
+
+    auto scramble1 = scramble_native_password("secret", auth_data)
+    if scramble1.len() != 20:usize { return 5 }
+
+    auto scramble2 = scramble_caching_sha2_password("secret", auth_data)
+    if scramble2.len() != 32:usize { return 6 }
+
+    println("registry_mysql_consumer: PASS")
+    return 0
+}
