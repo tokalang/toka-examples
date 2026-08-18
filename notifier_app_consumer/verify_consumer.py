@@ -223,6 +223,8 @@ def build_consumer(consumer_dir: Path, tokac: Path, sdk_lib: Path) -> Path:
     except Exception:
         link_cmd.extend(["-lssl", "-lcrypto"])
 
+    link_cmd.extend(["-lm", "-lpthread", "-ldl"])
+
     if platform.system() == "Darwin":
         try:
             sdk_path = subprocess.check_output(["xcrun", "--show-sdk-path"], text=True).strip()
