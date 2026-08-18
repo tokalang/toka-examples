@@ -1,0 +1,75 @@
+// Copyright (c) 2026 Toka contributors.
+// SPDX-License-Identifier: MIT
+
+import core/option::{Option}
+import std/env::{args_count, get_arg}
+import std/io::{println}
+import std/net::{Ipv4Addr, SocketAddrV4, TcpListener, resolve_ipv4}
+import std/task::{block_on}
+import std/vec::{Vec}
+import ./webhook::{ResponseHeader, load_hook_files, parse_default_methods, parse_global_header, parse_port, serve_file_forever_async}
+
+fn usage() {
+    println("Usage: webhook [--hooks <hooks.json>]... [-template|--template] [--ip <IPv4-or-host>] [--port <1-65535>] [--header name=value] [--http-methods GET,POST] [--urlprefix hooks]")
+}
+
+pub fn main() -> i32 {
+    auto hooks_paths# = Vec<string>::new()
+    auto port# = 9000:u16
+    auto listen_ip# = Ipv4Addr::new(0:u8, 0:u8, 0:u8, 0:u8)
+    auto headers# = Vec<ResponseHeader>::new()
+    auto default_methods# = Vec<string>::new()
+    auto url_prefix# = string::from("hooks")
+    auto as_template# = false
+    auto index# = 1:i32
+    loop index < args_count() {
+        auto argument = get_arg(index)
+        if argument.as_str().equals("--hooks") || argument.as_str().equals("-hooks") {
+            index = index + 1
+            if index >= args_count() { usage(); return 2 }
+            hooks_paths#.push(cede get_arg(index))
+        } else if argument.as_str().equals("--ip") {
+            index = index + 1
+            if index >= args_count() { usage(); return 2 }
+            auto address = get_arg(index)
+            if !address.as_str().equals("0.0.0.0") {
+                auto parsed = resolve_ipv4(address)
+                if parsed.is_err() { println("invalid --ip"); return 2 }
+                listen_ip = parsed.unwrap()
+            }
+        } else if argument.as_str().equals("--port") {
+            index = index + 1
+            if index >= args_count() { usage(); return 2 }
+            auto parsed = parse_port(get_arg(index).as_str())
+            if parsed.is_err() { println("invalid --port"); return 2 }
+            port = parsed.unwrap()
+        } else if argument.as_str().equals("--header") {
+            index = index + 1
+            if index >= args_count() { usage(); return 2 }
+            auto parsed = parse_global_header(get_arg(index).as_str())
+            if parsed.is_err() { println("invalid header"); return 2 }
+            headers#.push(cede parsed.unwrap())
+        } else if argument.as_str().equals("--http-methods") {
+            index = index + 1
+            if index >= args_count() { usage(); return 2 }
+            auto parsed = parse_default_methods(get_arg(index).as_str())
+            if parsed.is_err() { println("invalid --http-methods"); return 2 }
+            default_methods = cede parsed.unwrap()
+        } else if argument.as_str().equals("--urlprefix") {
+            index = index + 1
+            if index >= args_count() { usage(); return 2 }
+            url_prefix = get_arg(index)
+        } else if argument.as_str().equals("-template") || argument.as_str().equals("--template") {
+            as_template = true
+        } else { usage(); return 2 }
+        index = index + 1
+    }
+    if hooks_paths.len() == 0:usize { usage(); return 2 }
+    auto checked = load_hook_files(cede hooks_paths.clone(), as_template)
+    if checked.is_err() { println("failed to load hooks configuration: {}", checked.unwrap_err().as_str()); return 1 }
+
+    auto listener# = TcpListener::bind(SocketAddrV4::new(listen_ip, port))
+    if !listener.is_valid() { println("failed to bind listener"); return 1 }
+    auto server = serve_file_forever_async(cede hooks_paths, cede listener, cede headers, cede default_methods, cede url_prefix, as_template, 1048576:usize, 30000:i32).start
+    return block_on<i32>(server)
+}

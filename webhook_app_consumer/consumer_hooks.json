@@ -1,0 +1,75 @@
+[
+  {
+    "id": "deploy",
+    "execute-command": "/bin/echo",
+    "response-message": "deployment accepted",
+    "success-http-response-code": 200,
+    "include-command-output-in-response": true,
+    "pass-arguments-to-command": [
+      {
+        "source": "string",
+        "name": "CONSUMER_DEPLOY_SUCCESS"
+      }
+    ],
+    "http-methods": [
+      "POST"
+    ],
+    "trigger-rule": {
+      "match": {
+        "value": "consumer-secret-2026",
+        "parameter": {
+          "source": "header",
+          "name": "X-Consumer-Secret"
+        }
+      }
+    }
+  },
+  {
+    "id": "status",
+    "execute-command": "/bin/echo",
+    "response-message": "STATUS_HEALTHY",
+    "success-http-response-code": 200,
+    "include-command-output-in-response": true,
+    "pass-arguments-to-command": [
+      {
+        "source": "string",
+        "name": "STATUS_HEALTHY"
+      }
+    ],
+    "http-methods": [
+      "GET"
+    ],
+    "trigger-rule": {
+      "match": {
+        "value": "consumer-secret-2026",
+        "parameter": {
+          "source": "header",
+          "name": "X-Consumer-Secret"
+        }
+      }
+    }
+  },
+  {
+    "id": "disallowed-method",
+    "execute-command": "/bin/echo",
+    "include-command-output-in-response": true,
+    "pass-arguments-to-command": [
+      {
+        "source": "string",
+        "name": "POST_ONLY_SUCCESS"
+      }
+    ],
+    "http-methods": [
+      "POST"
+    ],
+    "trigger-rule": {
+      "match": {
+        "value": "consumer-secret-2026",
+        "parameter": {
+          "source": "header",
+          "name": "X-Consumer-Secret"
+        }
+      }
+    }
+  }
+]

@@ -1,0 +1,45 @@
+import webhook::{Argument, Hook, serve_one_async}
+import core/result::{Result}
+import std/net::{Ipv4Addr, SocketAddrV4, TcpListener}
+import std/task::{block_on, sleep_async}
+import std/vec::{Vec}
+import stdx/net/http::{HeaderMap, HttpClient, HttpMethod, HttpRequest}
+
+fn hook() -> Hook {
+    auto args# = Vec<Argument>::new()
+    return Hook::new(cede string::from("deploy"), cede string::from("/usr/bin/true"), cede args, cede string::from(""),
+                     cede string::from("X-Hook-Secret"), cede string::from("correct-horse"), cede string::from("value"), cede string::from(""))
+}
+
+fn request() -> HttpRequest {
+    auto headers# = HeaderMap::new()
+    assert(headers#.insert(string::from("Host"), string::from("127.0.0.1")).is_ok(), "host header")
+    assert(headers#.insert(string::from("X-Hook-Secret"), string::from("correct-horse")).is_ok(), "secret header")
+    return HttpRequest(method = HttpMethod::POST, path = string::from("/hooks/deploy"), version = string::from("HTTP/1.1"),
+                       headers = cede headers, body = string::from("{}"))
+}
+
+fn run() -> async i32 {
+    auto listener# = TcpListener::bind(SocketAddrV4::new(Ipv4Addr::new(127:u8, 0:u8, 0:u8, 1:u8), 0:u16))
+    assert(listener.is_valid(), "listener must bind")
+    auto port = listener.local_port()
+    assert(port != 0:u16, "listener must expose its port")
+
+    auto server = serve_one_async(cede hook(), cede listener, 16384:usize, 2000:i32).start
+    sleep_async(10:i32).await
+    auto address = SocketAddrV4::new(Ipv4Addr::new(127:u8, 0:u8, 0:u8, 1:u8), port)
+    auto response = HttpClient::new(2000:i32).execute_async(request(), address).await
+    auto server_result = server.await
+
+    assert(server_result.is_ok(), "server task must complete")
+    assert(server_result.unwrap() == 0:i32, "server task must return success")
+    assert(response.is_ok(), "client must receive a response")
+    auto reply = response.unwrap()
+    assert(reply.status_code == 200:i32, "authorized hook returns HTTP 200")
+    assert(reply.body.as_str().equals("hook triggered"), "response confirms execution")
+    return 0
+}
+
+fn main() -> i32 {
+    return block_on<i32>(run())
+}

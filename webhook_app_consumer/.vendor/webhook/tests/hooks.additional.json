@@ -1,0 +1,13 @@
+[
+  {
+    "id": "additional",
+    "execute-command": "/usr/bin/true",
+    "response-message": "additional accepted",
+    "trigger-rule": {
+      "match": {
+        "value": "correct-horse",
+        "parameter": {"source": "header", "name": "X-Hook-Secret"}
+      }
+    }
+  }
+]

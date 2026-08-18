@@ -1,0 +1,35 @@
+import webhook::{Argument, Hook, dispatch}
+import std/vec::{Vec}
+import stdx/net/http::{HeaderMap, HttpMethod, HttpRequest}
+
+fn hook() -> Hook {
+    auto args# = Vec<Argument>::new()
+    return Hook::new(cede string::from("deploy"), cede string::from("/usr/bin/true"), cede args, cede string::from(""),
+                     cede string::from("X-Hook-Secret"), cede string::from("correct-horse"), cede string::from("value"), cede string::from(""))
+}
+
+fn request(method: HttpMethod, path: str, secret: str) -> HttpRequest {
+    auto headers# = HeaderMap::new()
+    assert(headers#.insert(string::from("Host"), string::from("127.0.0.1")).is_ok(), "host header")
+    if secret.len() > 0:usize {
+        assert(headers#.insert(string::from("X-Hook-Secret"), string::from(secret)).is_ok(), "secret header")
+    }
+    return HttpRequest(method = method, path = string::from(path), version = string::from("HTTP/1.1"),
+                       headers = cede headers, body = string::from("{}"))
+}
+
+fn main() -> i32 {
+    auto accepted = dispatch(hook(), request(HttpMethod::POST, "/hooks/deploy", "correct-horse"))
+    assert(accepted.status_code == 200:i32, "authorized hook returns success")
+    assert(accepted.body.as_str().equals("hook triggered"), "success body")
+
+    auto rejected = dispatch(hook(), request(HttpMethod::POST, "/hooks/deploy", "wrong"))
+    assert(rejected.status_code == 400:i32, "wrong secret is rejected")
+
+    auto missing = dispatch(hook(), request(HttpMethod::POST, "/hooks/missing", "correct-horse"))
+    assert(missing.status_code == 404:i32, "unknown hook is not found")
+
+    auto wrong_method = dispatch(hook(), request(HttpMethod::GET, "/hooks/deploy", "correct-horse"))
+    assert(wrong_method.status_code == 200:i32, "an unspecified method list permits the request")
+    return 0
+}

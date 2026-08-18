@@ -1,0 +1,13 @@
+[
+  {
+    "id": "template",
+    "execute-command": "/usr/bin/true",
+    "response-message": "{{ getenv "TOKA_WEBHOOK_TEMPLATE_VALUE" }}|{{ cat "tests/template-cat.txt" }}|{{ credential "template-secret" }}",
+    "trigger-rule": {
+      "match": {
+        "value": "template-secret",
+        "parameter": {"source": "header", "name": "X-Hook-Secret"}
+      }
+    }
+  }
+]

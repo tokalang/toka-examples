@@ -1,0 +1,100 @@
+import webhook::{load_hook_files, load_hooks, load_hooks_with_template, parse_default_methods, parse_hooks, render_hooks_template}
+import core/result::{Result}
+import std/fs::{read_to_string}
+import std/vec::{Vec}
+import stdx/text/template::{Template, TemplateContext}
+
+fn read_template_file(name: str) -> Result<string, string> {
+    return read_to_string(string::from(name))
+}
+
+fn main() -> i32 {
+    auto parsed = parse_hooks("[{\"id\":\"deploy\",\"execute-command\":\"/usr/bin/true\",\"pass-arguments-to-command\":[\"--quiet\",\"--dry-run\"],\"command-working-directory\":\"/private/tmp\",\"trigger-rule\":{\"match\":{\"value\":\"correct-horse\",\"parameter\":{\"source\":\"header\",\"name\":\"X-Hook-Secret\"}}}}]")
+    assert(parsed.is_ok(), "valid upstream-shaped JSON hook configuration parses")
+    auto hooks = parsed.unwrap()
+    assert(hooks.len() == 1:usize, "one configured hook is returned")
+    assert(hooks.get_ref(0:usize).working_directory().as_str().equals("/private/tmp"), "working directory is retained")
+
+    auto rejected = parse_hooks("[{\"id\":\"deploy\",\"execute-command\":\"/usr/bin/true\",\"trigger-rule\":{\"match\":{\"value\":\"x\",\"parameter\":{\"source\":\"payload\",\"name\":\"x\"}}}}]")
+    assert(rejected.is_err(), "non-header request interpolation is not silently accepted")
+
+    auto signed = parse_hooks("[{\"id\":\"signed\",\"execute-command\":\"/usr/bin/true\",\"trigger-rule\":{\"match\":{\"type\":\"payload-hmac-sha256\",\"secret\":\"secret\",\"parameter\":{\"source\":\"header\",\"name\":\"X-Signature\"}}}}]")
+    assert(signed.is_ok(), "payload HMAC configuration parses")
+
+    auto command_ref = parse_hooks("[{\"id\":\"query\",\"execute-command\":\"/usr/bin/true\",\"pass-arguments-to-command\":[{\"source\":\"url\",\"name\":\"message\"}],\"trigger-rule\":{\"match\":{\"value\":\"x\",\"parameter\":{\"source\":\"header\",\"name\":\"X-Secret\"}}}}]")
+    assert(command_ref.is_ok(), "object command argument configuration parses")
+
+    auto payload_ref = parse_hooks("[{\"id\":\"payload\",\"execute-command\":\"/usr/bin/true\",\"pass-arguments-to-command\":[{\"source\":\"payload\",\"name\":\"repository.name\"}],\"trigger-rule\":{\"match\":{\"value\":\"x\",\"parameter\":{\"source\":\"header\",\"name\":\"X-Secret\"}}}}]")
+    assert(payload_ref.is_ok(), "JSON payload command argument configuration parses")
+
+    auto status_codes = parse_hooks("[{\"id\":\"status\",\"execute-command\":\"/usr/bin/true\",\"success-http-response-code\":202,\"trigger-rule-mismatch-http-response-code\":403,\"trigger-rule\":{\"match\":{\"value\":\"x\",\"parameter\":{\"source\":\"header\",\"name\":\"X-Secret\"}}}}]")
+    assert(status_codes.is_ok(), "custom HTTP response status configuration parses")
+
+    auto headers = parse_hooks("[{\"id\":\"headers\",\"execute-command\":\"/usr/bin/true\",\"response-headers\":[{\"name\":\"X-Webhook\",\"value\":\"configured\"}],\"trigger-rule\":{\"match\":{\"value\":\"x\",\"parameter\":{\"source\":\"header\",\"name\":\"X-Secret\"}}}}]")
+    assert(headers.is_ok(), "response header configuration parses")
+
+    auto methods = parse_hooks("[{\"id\":\"methods\",\"execute-command\":\"/usr/bin/true\",\"http-methods\":[\"get\",\"POST\"],\"trigger-rule\":{\"match\":{\"value\":\"x\",\"parameter\":{\"source\":\"header\",\"name\":\"X-Secret\"}}}}]")
+    assert(methods.is_ok(), "allowed HTTP methods configuration parses")
+
+    auto composed = parse_hooks("[{\"id\":\"composed\",\"execute-command\":\"/usr/bin/true\",\"trigger-rule\":{\"or\":[{\"match\":{\"value\":\"x\",\"parameter\":{\"source\":\"header\",\"name\":\"X-Secret\"}}},{\"not\":{\"match\":{\"value\":\"y\",\"parameter\":{\"source\":\"header\",\"name\":\"X-Other\"}}}}]}}]")
+    assert(composed.is_ok(), "nested and/or/not trigger-rule configuration parses")
+
+    auto regex = parse_hooks("[{\"id\":\"regex\",\"execute-command\":\"/usr/bin/true\",\"trigger-rule\":{\"match\":{\"type\":\"regex\",\"regex\":\"^release-[0-9]+$\",\"parameter\":{\"source\":\"header\",\"name\":\"X-Ref\"}}}}]")
+    assert(regex.is_ok(), "regex trigger-rule configuration parses")
+
+    auto complete_headers = parse_hooks("[{\"id\":\"headers\",\"execute-command\":\"/usr/bin/true\",\"pass-environment-to-command\":[{\"source\":\"entire-headers\",\"envname\":\"ALL_HEADERS\"}],\"trigger-rule\":{\"match\":{\"value\":\"x\",\"parameter\":{\"source\":\"header\",\"name\":\"X-Secret\"}}}}]")
+    assert(complete_headers.is_ok(), "entire header configuration parses")
+
+    auto form = parse_hooks("[{\"id\":\"form\",\"execute-command\":\"/usr/bin/true\",\"pass-arguments-to-command\":[{\"source\":\"payload\",\"name\":\"message\"}],\"trigger-rule\":{\"match\":{\"value\":\"x\",\"parameter\":{\"source\":\"header\",\"name\":\"X-Secret\"}}}}]")
+    assert(form.is_ok(), "form payload command configuration parses")
+
+    auto xml = parse_hooks("[{\"id\":\"xml\",\"execute-command\":\"/usr/bin/true\",\"pass-arguments-to-command\":[{\"source\":\"payload\",\"name\":\"repository.name\"}],\"trigger-rule\":{\"match\":{\"value\":\"x\",\"parameter\":{\"source\":\"header\",\"name\":\"X-Secret\"}}}}]")
+    assert(xml.is_ok(), "XML payload command configuration parses")
+
+    auto arbitrary_method = parse_hooks("[{\"id\":\"patch\",\"execute-command\":\"/usr/bin/true\",\"http-methods\":[\"PATCH\"],\"trigger-rule\":{\"match\":{\"value\":\"x\",\"parameter\":{\"source\":\"header\",\"name\":\"X-Secret\"}}}}]")
+    assert(arbitrary_method.is_ok(), "arbitrary HTTP method configuration parses")
+
+    auto ip_rule = parse_hooks("[{\"id\":\"local\",\"execute-command\":\"/usr/bin/true\",\"trigger-rule\":{\"match\":{\"type\":\"ip-whitelist\",\"ip-range\":\"127.0.0.0/8\"}}}]")
+    assert(ip_rule.is_ok(), "IPv4 whitelist configuration parses")
+
+    auto deprecated_signature = parse_hooks("[{\"id\":\"legacy\",\"execute-command\":\"/usr/bin/true\",\"trigger-rule\":{\"match\":{\"type\":\"payload-hash-sha256\",\"secret\":\"secret\",\"parameter\":{\"source\":\"header\",\"name\":\"X-Signature\"}}}}]")
+    assert(deprecated_signature.is_ok(), "deprecated payload hash signature configuration parses")
+
+    auto content_type_override = parse_hooks("[{\"id\":\"override\",\"execute-command\":\"/usr/bin/true\",\"incoming-payload-content-type\":\"application/json\",\"trigger-rule\":{\"match\":{\"value\":\"x\",\"parameter\":{\"source\":\"header\",\"name\":\"X-Secret\"}}}}]")
+    assert(content_type_override.is_ok(), "incoming payload content type configuration parses")
+
+    auto file_binding = parse_hooks("[{\"id\":\"file\",\"execute-command\":\"/usr/bin/true\",\"pass-file-to-command\":[{\"source\":\"raw-request-body\",\"name\":\"body\",\"base64decode\":true}],\"trigger-rule\":{\"match\":{\"value\":\"x\",\"parameter\":{\"source\":\"header\",\"name\":\"X-Secret\"}}}}]")
+    assert(file_binding.is_ok(), "file command binding configuration parses")
+
+    auto invalid_file_binding = parse_hooks("[{\"id\":\"file\",\"execute-command\":\"/usr/bin/true\",\"pass-file-to-command\":[\"body\"],\"trigger-rule\":{\"match\":{\"value\":\"x\",\"parameter\":{\"source\":\"header\",\"name\":\"X-Secret\"}}}}]")
+    assert(invalid_file_binding.is_err(), "file command binding must be an object")
+
+    auto yaml = load_hooks(string::from("tests/hooks.yaml"))
+    assert(yaml.is_ok(), "YAML hook configuration loads")
+    assert(yaml.unwrap().len() == 1:usize, "YAML hook configuration has one hook")
+
+    auto rendered_template = render_hooks_template("[{\"id\":\"template\",\"execute-command\":\"/usr/bin/true\",\"response-message\":\"{{ getenv \\\"TOKA_WEBHOOK_TEMPLATE_VALUE\\\" }}\"}]")
+    assert(rendered_template.is_ok(), "registered template helper renders configuration text")
+    auto file_template = Template::parse("{{ read_file \"tests/template-cat.txt\" }}").unwrap()
+    auto file_handler = { name => read_template_file(name) }: fn(str) -> Result<string, string>
+    auto file_context# = TemplateContext::new()
+    file_context#.register_func(cede string::from("read_file"), file_handler)
+    auto file_result = file_template.render(file_context)
+    assert(file_result.is_ok(), "file-backed template callback succeeds")
+    assert(file_result.unwrap().as_str().equals("from-cat\n"), "template callback retains file contents")
+    auto template_hooks = load_hooks_with_template(string::from("tests/hooks.template.json"), true)
+    assert(template_hooks.is_ok(), "templated JSON hook configuration loads")
+    assert(template_hooks.unwrap().len() == 1:usize, "templated hook configuration has one hook")
+
+    auto hook_files# = Vec<string>::new()
+    hook_files#.push(cede string::from("tests/hooks.yaml"))
+    hook_files#.push(cede string::from("tests/hooks.additional.json"))
+    auto merged = load_hook_files(cede hook_files, false)
+    assert(merged.is_ok(), "multiple hooks files load")
+    assert(merged.unwrap().len() == 2:usize, "multiple hooks files merge in order")
+
+    auto default_methods = parse_default_methods("GET, POST")
+    assert(default_methods.is_ok(), "default HTTP methods parse")
+    assert(default_methods.unwrap().len() == 2:usize, "default HTTP methods include both values")
+    return 0
+}

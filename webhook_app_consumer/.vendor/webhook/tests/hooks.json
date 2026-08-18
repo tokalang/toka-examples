@@ -1,0 +1,335 @@
+[
+  {
+    "id": "deploy",
+    "execute-command": "/usr/bin/true",
+    "response-message": "deployment accepted",
+    "success-http-response-code": 202,
+    "trigger-rule-mismatch-http-response-code": 403,
+    "response-headers": [
+      {"name": "X-Webhook-Response", "value": "configured"}
+    ],
+    "pass-arguments-to-command": [],
+    "trigger-rule": {
+      "match": {
+        "value": "correct-horse",
+        "parameter": {
+          "source": "header",
+          "name": "X-Hook-Secret"
+        }
+      }
+    }
+  }
+  ,
+  {
+    "id": "env",
+    "execute-command": "/usr/bin/printenv",
+    "pass-arguments-to-command": ["WEBHOOK_TEST"],
+    "include-command-output-in-response": true,
+    "pass-environment-to-command": [
+      {"source": "string", "name": "webhook", "envname": "WEBHOOK_TEST"}
+    ],
+    "trigger-rule": {
+      "match": {
+        "value": "correct-horse",
+        "parameter": {
+          "source": "header",
+          "name": "X-Hook-Secret"
+        }
+      }
+    }
+  },
+  {
+    "id": "query",
+    "execute-command": "/usr/bin/printf",
+    "pass-arguments-to-command": [
+      {"source": "string", "name": "%s"},
+      {"source": "url", "name": "message"}
+    ],
+    "include-command-output-in-response": true,
+    "trigger-rule": {
+      "match": {
+        "value": "correct-horse",
+        "parameter": {
+          "source": "header",
+          "name": "X-Hook-Secret"
+        }
+      }
+    }
+  },
+  {
+    "id": "references",
+    "execute-command": "/usr/bin/printf",
+    "pass-arguments-to-command": [
+      {"source": "string", "name": "%s|%s|%s"},
+      {"source": "header", "name": "X-Trace"},
+      {"source": "raw-request-body"},
+      {"source": "request", "name": "method"}
+    ],
+    "include-command-output-in-response": true,
+    "trigger-rule": {
+      "match": {
+        "value": "correct-horse",
+        "parameter": {
+          "source": "header",
+          "name": "X-Hook-Secret"
+        }
+      }
+    }
+  },
+  {
+    "id": "payload",
+    "execute-command": "/usr/bin/printf",
+    "pass-arguments-to-command": [
+      {"source": "string", "name": "%s"},
+      {"source": "payload", "name": "repository.name"}
+    ],
+    "include-command-output-in-response": true,
+    "trigger-rule": {
+      "match": {
+        "value": "correct-horse",
+        "parameter": {
+          "source": "header",
+          "name": "X-Hook-Secret"
+        }
+      }
+    }
+  },
+  {
+    "id": "get-only",
+    "execute-command": "/usr/bin/true",
+    "response-message": "GET accepted",
+    "http-methods": ["get"],
+    "trigger-rule": {
+      "match": {
+        "value": "correct-horse",
+        "parameter": {
+          "source": "header",
+          "name": "X-Hook-Secret"
+        }
+      }
+    }
+  },
+  {
+    "id": "combined",
+    "execute-command": "/usr/bin/true",
+    "response-message": "combined accepted",
+    "trigger-rule": {
+      "and": [
+        {"match": {"value": "correct-horse", "parameter": {"source": "header", "name": "X-Hook-Secret"}}},
+        {"not": {"match": {"value": "deny", "parameter": {"source": "header", "name": "X-Deny"}}}}
+      ]
+    }
+  },
+  {
+    "id": "regex",
+    "execute-command": "/usr/bin/true",
+    "response-message": "regex accepted",
+    "trigger-rule": {
+      "match": {
+        "type": "regex",
+        "regex": "^release-[0-9]+$",
+        "parameter": {
+          "source": "header",
+          "name": "X-Ref"
+        }
+      }
+    }
+  },
+  {
+    "id": "headers",
+    "execute-command": "/usr/bin/printenv",
+    "pass-arguments-to-command": ["ALL_HEADERS"],
+    "pass-environment-to-command": [
+      {"source": "entire-headers", "envname": "ALL_HEADERS"}
+    ],
+    "include-command-output-in-response": true,
+    "trigger-rule": {
+      "match": {
+        "value": "correct-horse",
+        "parameter": {"source": "header", "name": "X-Hook-Secret"}
+      }
+    }
+  },
+  {
+    "id": "form",
+    "execute-command": "/usr/bin/printf",
+    "pass-arguments-to-command": ["%s", {"source": "payload", "name": "message"}],
+    "include-command-output-in-response": true,
+    "trigger-rule": {
+      "match": {
+        "value": "correct-horse",
+        "parameter": {"source": "header", "name": "X-Hook-Secret"}
+      }
+    }
+  },
+  {
+    "id": "xml",
+    "execute-command": "/usr/bin/printf",
+    "pass-arguments-to-command": ["%s", {"source": "payload", "name": "repository.name"}],
+    "include-command-output-in-response": true,
+    "trigger-rule": {
+      "match": {
+        "value": "correct-horse",
+        "parameter": {"source": "header", "name": "X-Hook-Secret"}
+      }
+    }
+  },
+  {
+    "id": "patch-only",
+    "execute-command": "/usr/bin/true",
+    "response-message": "PATCH accepted",
+    "http-methods": ["PATCH"],
+    "trigger-rule": {
+      "match": {
+        "value": "correct-horse",
+        "parameter": {"source": "header", "name": "X-Hook-Secret"}
+      }
+    }
+  },
+  {
+    "id": "ip-local",
+    "execute-command": "/usr/bin/true",
+    "response-message": "local address accepted",
+    "trigger-rule": {
+      "match": {
+        "type": "ip-whitelist",
+        "ip-range": "127.0.0.0/8"
+      }
+    }
+  },
+  {
+    "id": "remote",
+    "execute-command": "/usr/bin/printf",
+    "pass-arguments-to-command": ["%s", {"source": "request", "name": "remote-addr"}],
+    "include-command-output-in-response": true,
+    "trigger-rule": {
+      "match": {
+        "value": "correct-horse",
+        "parameter": {"source": "header", "name": "X-Hook-Secret"}
+      }
+    }
+  },
+  {
+    "id": "json-array",
+    "execute-command": "/usr/bin/printf",
+    "pass-arguments-to-command": ["%s", {"source": "payload", "name": "root.0.email"}],
+    "include-command-output-in-response": true,
+    "trigger-rule": {
+      "match": {
+        "value": "correct-horse",
+        "parameter": {"source": "header", "name": "X-Hook-Secret"}
+      }
+    }
+  },
+  {
+    "id": "multipart",
+    "execute-command": "/usr/bin/printf",
+    "pass-arguments-to-command": ["%s", {"source": "payload", "name": "message"}],
+    "include-command-output-in-response": true,
+    "trigger-rule": {
+      "match": {
+        "value": "correct-horse",
+        "parameter": {"source": "header", "name": "X-Hook-Secret"}
+      }
+    }
+  },
+  {
+    "id": "content-type-override",
+    "execute-command": "/usr/bin/printf",
+    "incoming-payload-content-type": "application/json",
+    "pass-arguments-to-command": ["%s", {"source": "payload", "name": "repository.name"}],
+    "include-command-output-in-response": true,
+    "trigger-rule": {
+      "match": {
+        "value": "correct-horse",
+        "parameter": {"source": "header", "name": "X-Hook-Secret"}
+      }
+    }
+  },
+  {
+    "id": "default-method",
+    "execute-command": "/usr/bin/true",
+    "response-message": "default method accepted",
+    "trigger-rule": {
+      "match": {
+        "value": "correct-horse",
+        "parameter": {"source": "header", "name": "X-Hook-Secret"}
+      }
+    }
+  },
+  {
+    "id": "complete-values",
+    "execute-command": "/usr/bin/printf",
+    "pass-arguments-to-command": ["%s|%s", {"source": "entire-payload"}, {"source": "entire-query"}],
+    "include-command-output-in-response": true,
+    "trigger-rule": {
+      "match": {
+        "value": "correct-horse",
+        "parameter": {"source": "header", "name": "X-Hook-Secret"}
+      }
+    }
+  },
+  {
+    "id": "file",
+    "execute-command": "/usr/bin/python3",
+    "pass-arguments-to-command": ["-c", "import os,sys;sys.stdout.buffer.write(open(os.environ['HOOK_BODY'],'rb').read())"],
+    "pass-file-to-command": [
+      {"source": "raw-request-body", "name": "body"}
+    ],
+    "include-command-output-in-response": true,
+    "trigger-rule": {
+      "match": {
+        "value": "correct-horse",
+        "parameter": {"source": "header", "name": "X-Hook-Secret"}
+      }
+    }
+  },
+  {
+    "id": "file-base64",
+    "execute-command": "/usr/bin/python3",
+    "pass-arguments-to-command": ["-c", "import os,sys;sys.stdout.buffer.write(open(os.environ['HOOK_BINARY'],'rb').read())"],
+    "pass-file-to-command": [
+      {"source": "raw-request-body", "name": "binary", "base64decode": true}
+    ],
+    "include-command-output-in-response": true,
+    "trigger-rule": {
+      "match": {
+        "value": "correct-horse",
+        "parameter": {"source": "header", "name": "X-Hook-Secret"}
+      }
+    }
+  },
+  {
+    "id": "file-cleanup",
+    "execute-command": "/usr/bin/printenv",
+    "pass-arguments-to-command": ["HOOK_CLEANUP"],
+    "pass-file-to-command": [
+      {"source": "raw-request-body", "name": "cleanup"}
+    ],
+    "include-command-output-in-response": true,
+    "trigger-rule": {
+      "match": {
+        "value": "correct-horse",
+        "parameter": {"source": "header", "name": "X-Hook-Secret"}
+      }
+    }
+  },
+  {
+    "id": "file-mode",
+    "execute-command": "/usr/bin/python3",
+    "pass-arguments-to-command": [
+      "-c",
+      "import os, stat, sys; p = os.environ['HOOK_DATA']; print(oct(stat.S_IMODE(os.stat(p).st_mode)))"
+    ],
+    "pass-file-to-command": [
+      {"source": "raw-request-body", "name": "data"}
+    ],
+    "include-command-output-in-response": true,
+    "trigger-rule": {
+      "match": {
+        "value": "correct-horse",
+        "parameter": {"source": "header", "name": "X-Hook-Secret"}
+      }
+    }
+  }
+]

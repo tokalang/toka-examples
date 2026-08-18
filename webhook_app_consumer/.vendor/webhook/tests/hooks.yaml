@@ -1,0 +1,13 @@
+- id: yaml
+  execute-command: /usr/bin/printf
+  pass-arguments-to-command:
+    - "%s"
+    - source: url
+      name: message
+  include-command-output-in-response: true
+  trigger-rule:
+    match:
+      value: correct-horse
+      parameter:
+        source: header
+        name: X-Hook-Secret

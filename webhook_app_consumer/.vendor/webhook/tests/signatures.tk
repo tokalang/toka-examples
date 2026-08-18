@@ -1,0 +1,36 @@
+import webhook::{Argument, Hook, dispatch}
+import std/vec::{Vec}
+import stdx/net/http::{HeaderMap, HttpMethod, HttpRequest}
+
+fn request(signature: str, body: str) -> HttpRequest {
+    auto headers# = HeaderMap::new()
+    assert(headers#.insert(string::from("Host"), string::from("127.0.0.1")).is_ok(), "host header")
+    assert(headers#.insert(string::from("X-Signature"), string::from(signature)).is_ok(), "signature header")
+    return HttpRequest(method = HttpMethod::POST, path = string::from("/hooks/deploy"), version = string::from("HTTP/1.1"),
+                       headers = cede headers, body = string::from(body))
+}
+
+fn hook(kind: str) -> Hook {
+    auto args# = Vec<Argument>::new()
+    return Hook::new(cede string::from("deploy"), cede string::from("/usr/bin/true"), cede args,
+        cede string::from(""), cede string::from("X-Signature"), cede string::from(""),
+        cede string::from(kind), cede string::from("secret"))
+}
+
+fn main() -> i32 {
+    auto sha1 = dispatch(hook("payload-hmac-sha1"), request("sha1=5112055c05f944f85755efc5cd8970e194e9f45b", "hello"))
+    assert(sha1.status_code == 200:i32, "HMAC-SHA1 accepts a matching signature")
+
+    auto sha256 = dispatch(hook("payload-hmac-sha256"), request("sha256=bad,sha256=88aab3ede8d3adf94d26ab90d3bafd4a2083070c3bcce9c014ee04a443847c0b", "hello"))
+    assert(sha256.status_code == 200:i32, "HMAC-SHA256 accepts any matching comma-separated signature")
+
+    auto sha512 = dispatch(hook("payload-hmac-sha512"), request("sha512=db1595ae88a62fd151ec1cba81b98c39df82daae7b4cb9820f446d5bf02f1dcfca6683d88cab3e273f5963ab8ec469a746b5b19086371239f67d1e5f99a79440", "hello"))
+    assert(sha512.status_code == 200:i32, "HMAC-SHA512 accepts a matching signature")
+
+    auto sha256_alias = dispatch(hook("payload-hash-sha256"), request("sha256=88aab3ede8d3adf94d26ab90d3bafd4a2083070c3bcce9c014ee04a443847c0b", "hello"))
+    assert(sha256_alias.status_code == 200:i32, "deprecated payload-hash alias accepts a matching signature")
+
+    auto invalid = dispatch(hook("payload-hmac-sha256"), request("sha256=88aab3ede8d3adf94d26ab90d3bafd4a2083070c3bcce9c014ee04a443847c0c", "hello"))
+    assert(invalid.status_code == 400:i32, "invalid signature is rejected")
+    return 0
+}

@@ -1,0 +1,1923 @@
+// Copyright (c) 2026 Toka contributors.
+// SPDX-License-Identifier: MIT
+//
+// Independent Toka implementation; upstream provenance is documented in NOTICE.
+
+import core/option::{Option}
+import core/result::{Result}
+import std/env
+import std/error::{IoError}
+import std/fs::{TempFile, create_temp_file, create_temp_file_system, read_to_string, write_string}
+import std/hashmap::{HashMap}
+import std/io::{remove_file}
+import std/net::{Ipv4Addr, SocketAddrV4, TcpListener, TcpStream}
+import std/path::{join}
+import std/process::{Command, STDIO_NULL}
+import std/bytes::{Bytes}
+import std/vec::{Vec}
+import stdx/crypto/hmac::{hmac_sha1_verify, hmac_sha256_verify, hmac_sha512_verify}
+import stdx/encoding/base64
+import stdx/encoding/hex
+import stdx/net/http::{HeaderMap, HttpMethod, HttpRequest, HttpResponse, parse_http_request_with_limit, string_slice}
+import stdx/net/url::{query_decode}
+import stdx/serde/json::{JsonNode, write_escaped_json_string}
+import stdx/serde/yaml
+import stdx/text/template::{Template, TemplateContext}
+
+extern fn getpeername(fd: i32, *addr: void, *addrlen: u32) -> i32
+extern fn libc_free(*ptr: void) -> void
+
+pub shape Hook (
+    id: string,
+    command: string,
+    args: Vec<Argument>,
+    working_dir: string,
+    required_header: string,
+    required_value: string,
+    rule_kind: string,
+    rule_secret: string,
+    environment: Vec<Argument>,
+    files: Vec<FileBinding>,
+    response_message: string,
+    capture_output: bool,
+    capture_output_on_error: bool,
+    success_status: i32,
+    mismatch_status: i32,
+    response_headers: Vec<ResponseHeader>,
+    methods: Vec<string>,
+    rule: TriggerRule
+)
+
+pub shape Argument (
+    source: string,
+    name: string,
+    env_name: string
+)
+
+pub shape FileBinding (
+    source: string,
+    name: string,
+    env_name: string,
+    base64_decode: bool
+)
+
+pub shape ResponseHeader (
+    name: string,
+    value: string
+)
+
+impl ResponseHeader {
+    pub fn clone(self) -> ResponseHeader {
+        return ResponseHeader(name = self.name.clone(), value = self.value.clone())
+    }
+}
+
+impl Argument {
+    pub fn clone(self) -> Argument {
+        return Argument(source = self.source.clone(), name = self.name.clone(), env_name = self.env_name.clone())
+    }
+}
+
+impl FileBinding {
+    pub fn clone(self) -> FileBinding {
+        return FileBinding(source = self.source.clone(), name = self.name.clone(),
+                           env_name = self.env_name.clone(), base64_decode = self.base64_decode)
+    }
+}
+
+shape HeaderRule (
+    name: string,
+    value: string,
+    kind: string,
+    secret: string
+)
+
+impl HeaderRule {
+    fn clone(self) -> HeaderRule {
+        return HeaderRule(name = self.name.clone(), value = self.value.clone(), kind = self.kind.clone(), secret = self.secret.clone())
+    }
+}
+
+pub shape TriggerRule (
+    MatchNode(HeaderRule) = 0 |
+    AndNode(Vec<TriggerRule>) = 1 |
+    OrNode(Vec<TriggerRule>) = 2 |
+    NotNode(Vec<TriggerRule>) = 3
+)
+
+impl TriggerRule {
+    fn clone(self) -> TriggerRule {
+        match self {
+            auto MatchNode(&rule) => return TriggerRule::MatchNode(rule.clone())
+            auto AndNode(&rules) => return TriggerRule::AndNode(cede clone_rule_list(rules))
+            auto OrNode(&rules) => return TriggerRule::OrNode(cede clone_rule_list(rules))
+            auto NotNode(&rules) => return TriggerRule::NotNode(cede clone_rule_list(rules))
+        }
+    }
+}
+
+fn clone_rule_list(source: Vec<TriggerRule>) -> Vec<TriggerRule> {
+    auto result# = Vec<TriggerRule>::new()
+    auto index# = 0:usize
+    loop index < source.len() {
+        result#.push(cede source.get_ref(index).clone())
+        index = index + 1:usize
+    }
+    return result
+}
+
+impl Hook {
+    pub fn new(cede id: string, cede command: string, cede args: Vec<Argument>, cede working_dir: string, cede required_header: string, cede required_value: string, cede rule_kind: string, cede rule_secret: string) -> Hook {
+        auto environment# = Vec<Argument>::new()
+        auto files# = Vec<FileBinding>::new()
+        auto response_headers# = Vec<ResponseHeader>::new()
+        auto methods# = Vec<string>::new()
+        auto rule = TriggerRule::MatchNode(HeaderRule(name = required_header.clone(), value = required_value.clone(),
+                                                       kind = rule_kind.clone(), secret = rule_secret.clone()))
+        return Hook(id = cede id, command = cede command, args = cede args, working_dir = cede working_dir,
+                    required_header = cede required_header, required_value = cede required_value,
+                    rule_kind = cede rule_kind, rule_secret = cede rule_secret, environment = cede environment,
+                    files = cede files,
+                    response_message = string::from("hook triggered"), capture_output = false,
+                    capture_output_on_error = false, success_status = 200:i32, mismatch_status = 400:i32,
+                    response_headers = cede response_headers, methods = cede methods, rule = cede rule)
+    }
+
+    pub fn clone(self) -> Hook {
+        auto args# = Vec<Argument>::new()
+        auto arg_index# = 0:usize
+        loop arg_index < self.args.len() {
+            args#.push(cede self.args.get_ref(arg_index).clone())
+            arg_index = arg_index + 1:usize
+        }
+        auto environment# = Vec<Argument>::new()
+        auto index# = 0:usize
+        loop index < self.environment.len() {
+            environment#.push(cede self.environment.get_ref(index).clone())
+            index = index + 1:usize
+        }
+        auto files# = Vec<FileBinding>::new()
+        index = 0:usize
+        loop index < self.files.len() {
+            files#.push(cede self.files.get_ref(index).clone())
+            index = index + 1:usize
+        }
+        auto response_headers# = Vec<ResponseHeader>::new()
+        index = 0:usize
+        loop index < self.response_headers.len() {
+            response_headers#.push(cede self.response_headers.get_ref(index).clone())
+            index = index + 1:usize
+        }
+        auto methods# = self.methods.clone()
+        return Hook(id = self.id.clone(), command = self.command.clone(), args = cede args,
+                    working_dir = self.working_dir.clone(), required_header = self.required_header.clone(),
+                    required_value = self.required_value.clone(), rule_kind = self.rule_kind.clone(),
+                    rule_secret = self.rule_secret.clone(), environment = cede environment, files = cede files,
+                    response_message = self.response_message.clone(), capture_output = self.capture_output,
+                    capture_output_on_error = self.capture_output_on_error, success_status = self.success_status,
+                    mismatch_status = self.mismatch_status, response_headers = cede response_headers, methods = cede methods,
+                    rule = self.rule.clone())
+    }
+
+    pub fn working_directory(self) -> string { return self.working_dir.clone() }
+}
+
+fn required_field(fields#: HashMap<string, JsonNode>, key: str) -> Result<JsonNode, string> {
+    auto found = fields#.remove(string::from(key))
+    if found.is_none() { return Result<JsonNode, string>::Err(string::from("configuration is missing a required field")) }
+    return Result<JsonNode, string>::Ok(cede found.unwrap())
+}
+
+fn string_value(cede node: JsonNode) -> Result<string, string> {
+    match cede node {
+        auto StrNode('text) => return Result<string, string>::Ok(cede 'text)
+        _ => return Result<string, string>::Err(string::from("configuration value must be a JSON string"))
+    }
+}
+
+fn optional_string(fields#: HashMap<string, JsonNode>, key: str, fallback: str) -> Result<string, string> {
+    auto found = fields#.remove(string::from(key))
+    if found.is_none() { return Result<string, string>::Ok(string::from(fallback)) }
+    return string_value(cede found.unwrap())
+}
+
+fn bool_value(cede node: JsonNode) -> Result<bool, string> {
+    match cede node {
+        auto BoolNode(value) => return Result<bool, string>::Ok(value)
+        _ => return Result<bool, string>::Err(string::from("configuration value must be a JSON boolean"))
+    }
+}
+
+fn optional_bool(fields#: HashMap<string, JsonNode>, key: str, fallback: bool) -> Result<bool, string> {
+    auto found = fields#.remove(string::from(key))
+    if found.is_none() { return Result<bool, string>::Ok(fallback) }
+    return bool_value(cede found.unwrap())
+}
+
+fn optional_status(fields#: HashMap<string, JsonNode>, key: str, fallback: i32) -> Result<i32, string> {
+    auto found = fields#.remove(string::from(key))
+    if found.is_none() { return Result<i32, string>::Ok(fallback) }
+    match cede found.unwrap() {
+        auto NumNode(value) => {
+            auto status = value as i32
+            if value != status as f64 || status < 100:i32 || status > 599:i32 {
+                return Result<i32, string>::Err(string::from("HTTP response status must be an integer from 100 through 599"))
+            }
+            return Result<i32, string>::Ok(status)
+        }
+        _ => return Result<i32, string>::Err(string::from("HTTP response status must be a JSON number"))
+    }
+}
+
+fn optional_response_headers(fields#: HashMap<string, JsonNode>) -> Result<Vec<ResponseHeader>, string> {
+    auto found = fields#.remove(string::from("response-headers"))
+    auto headers# = Vec<ResponseHeader>::new()
+    if found.is_none() { return Result<Vec<ResponseHeader>, string>::Ok(cede headers) }
+    match cede found.unwrap() {
+        auto ArrayNode('items) => {
+            auto items# = cede 'items
+            loop !items.is_empty() {
+                auto item = items#.remove(0:usize)
+                if item.is_none() { return Result<Vec<ResponseHeader>, string>::Err(string::from("response header array changed during parse")) }
+                match cede item.unwrap() {
+                    auto ObjectNode('fields) => {
+                        auto fields# = cede 'fields
+                        auto name = string_value(cede required_field(fields, "name")!)!
+                        auto value = string_value(cede required_field(fields, "value")!)!
+                        auto probe# = HeaderMap::new()
+                        if probe#.insert(name.clone(), value.clone()).is_err() {
+                            return Result<Vec<ResponseHeader>, string>::Err(string::from("response header is invalid"))
+                        }
+                        headers#.push(cede ResponseHeader(name = cede name, value = cede value))
+                    }
+                    _ => return Result<Vec<ResponseHeader>, string>::Err(string::from("response header must be an object"))
+                }
+            }
+            return Result<Vec<ResponseHeader>, string>::Ok(cede headers)
+        }
+        _ => return Result<Vec<ResponseHeader>, string>::Err(string::from("response-headers must be a JSON array"))
+    }
+}
+
+fn optional_methods(fields#: HashMap<string, JsonNode>) -> Result<Vec<string>, string> {
+    auto found = fields#.remove(string::from("http-methods"))
+    auto methods# = Vec<string>::new()
+    if found.is_none() { return Result<Vec<string>, string>::Ok(cede methods) }
+    match cede found.unwrap() {
+        auto ArrayNode('items) => {
+            auto items# = cede 'items
+            loop !items.is_empty() {
+                auto item = items#.remove(0:usize)
+                if item.is_none() { return Result<Vec<string>, string>::Err(string::from("HTTP method array changed during parse")) }
+                auto method = string_value(cede item.unwrap())
+                if method.is_err() { return Result<Vec<string>, string>::Err(string::from("HTTP method must be a non-empty string")) }
+                auto method_text = method.unwrap()
+                if method_text.len() == 0:usize { return Result<Vec<string>, string>::Err(string::from("HTTP method must be a non-empty string")) }
+                methods#.push(cede method_text.to_upper())
+            }
+            return Result<Vec<string>, string>::Ok(cede methods)
+        }
+        _ => return Result<Vec<string>, string>::Err(string::from("http-methods must be a JSON array"))
+    }
+}
+
+pub fn parse_default_methods(text: str) -> Result<Vec<string>, string> {
+    auto methods# = Vec<string>::new()
+    auto parts# = string::from(text).split(',' as i32)
+    loop !parts.is_done() {
+        auto method = parts#.next().trim().to_upper()
+        if method.len() == 0:usize { return Result<Vec<string>, string>::Err(string::from("HTTP method must be a non-empty string")) }
+        methods#.push(cede method)
+    }
+    return Result<Vec<string>, string>::Ok(cede methods)
+}
+
+fn parse_argument_fields(fields#: HashMap<string, JsonNode>) -> Result<Argument, string> {
+    auto source = optional_string(fields, "source", "string")!
+    auto name = optional_string(fields, "name", "")!
+    auto env_name = optional_string(fields, "envname", "")!
+    if name.len() == 0:usize && !source.as_str().equals("raw-request-body") &&
+       !source.as_str().equals("entire-payload") && !source.as_str().equals("entire-query") &&
+       !source.as_str().equals("entire-headers") {
+        return Result<Argument, string>::Err(string::from("argument source requires name"))
+    }
+    return Result<Argument, string>::Ok(Argument(source = cede source, name = cede name, env_name = cede env_name))
+}
+
+fn parse_argument(cede node: JsonNode) -> Result<Argument, string> {
+    match cede node {
+        auto ObjectNode('fields) => {
+            auto fields# = cede 'fields
+            return parse_argument_fields(fields)
+        }
+        _ => return Result<Argument, string>::Err(string::from("command environment entry must be an object"))
+    }
+}
+
+fn parse_command_argument(cede node: JsonNode) -> Result<Argument, string> {
+    match cede node {
+        auto StrNode('text) => return Result<Argument, string>::Ok(Argument(source = string::from("string"), name = cede 'text, env_name = string::from("")))
+        auto ObjectNode('fields) => {
+            auto fields# = cede 'fields
+            return parse_argument_fields(fields)
+        }
+        _ => return Result<Argument, string>::Err(string::from("command argument must be a string or object"))
+    }
+}
+
+fn optional_environment(fields#: HashMap<string, JsonNode>) -> Result<Vec<Argument>, string> {
+    auto found = fields#.remove(string::from("pass-environment-to-command"))
+    auto values# = Vec<Argument>::new()
+    if found.is_none() { return Result<Vec<Argument>, string>::Ok(cede values) }
+    match cede found.unwrap() {
+        auto ArrayNode('items) => {
+            auto items# = cede 'items
+            loop !items.is_empty() {
+                auto item = items#.remove(0:usize)
+                if item.is_none() { return Result<Vec<Argument>, string>::Err(string::from("environment array changed during parse")) }
+                auto parsed = parse_argument(cede item.unwrap())
+                if parsed.is_err() { return Result<Vec<Argument>, string>::Err(parsed.unwrap_err()) }
+                values#.push(cede parsed.unwrap())
+            }
+            return Result<Vec<Argument>, string>::Ok(cede values)
+        }
+        _ => return Result<Vec<Argument>, string>::Err(string::from("pass-environment-to-command must be a JSON array"))
+    }
+}
+
+fn parse_file_binding(cede node: JsonNode) -> Result<FileBinding, string> {
+    match cede node {
+        auto ObjectNode('fields) => {
+            auto fields# = cede 'fields
+            auto source = optional_string(fields, "source", "string")!
+            auto name = optional_string(fields, "name", "")!
+            auto env_name = optional_string(fields, "envname", "")!
+            auto base64_decode = optional_bool(fields, "base64decode", false)!
+            if name.len() == 0:usize {
+                return Result<FileBinding, string>::Err(string::from("pass-file-to-command entry requires name"))
+            }
+            return Result<FileBinding, string>::Ok(FileBinding(source = cede source, name = cede name,
+                env_name = cede env_name, base64_decode = base64_decode))
+        }
+        _ => return Result<FileBinding, string>::Err(string::from("pass-file-to-command entry must be an object"))
+    }
+}
+
+fn optional_files(fields#: HashMap<string, JsonNode>) -> Result<Vec<FileBinding>, string> {
+    auto found = fields#.remove(string::from("pass-file-to-command"))
+    auto files# = Vec<FileBinding>::new()
+    if found.is_none() { return Result<Vec<FileBinding>, string>::Ok(cede files) }
+    match cede found.unwrap() {
+        auto ArrayNode('items) => {
+            auto items# = cede 'items
+            loop !items.is_empty() {
+                auto item = items#.remove(0:usize)
+                if item.is_none() { return Result<Vec<FileBinding>, string>::Err(string::from("file binding array changed during parse")) }
+                auto parsed = parse_file_binding(cede item.unwrap())
+                if parsed.is_err() { return Result<Vec<FileBinding>, string>::Err(parsed.unwrap_err()) }
+                files#.push(cede parsed.unwrap())
+            }
+            return Result<Vec<FileBinding>, string>::Ok(cede files)
+        }
+        _ => return Result<Vec<FileBinding>, string>::Err(string::from("pass-file-to-command must be a JSON array"))
+    }
+}
+
+fn optional_args(fields#: HashMap<string, JsonNode>) -> Result<Vec<Argument>, string> {
+    auto found = fields#.remove(string::from("pass-arguments-to-command"))
+    auto args# = Vec<Argument>::new()
+    if found.is_none() { return Result<Vec<Argument>, string>::Ok(cede args) }
+    match cede found.unwrap() {
+        auto ArrayNode('items) => {
+            auto items# = cede 'items
+            loop !items.is_empty() {
+                auto item = items#.remove(0:usize)
+                if item.is_none() { return Result<Vec<Argument>, string>::Err(string::from("arguments array changed during parse")) }
+                auto parsed = parse_command_argument(cede item.unwrap())
+                if parsed.is_err() { return Result<Vec<Argument>, string>::Err(parsed.unwrap_err()) }
+                args#.push(cede parsed.unwrap())
+            }
+            return Result<Vec<Argument>, string>::Ok(cede args)
+        }
+        _ => return Result<Vec<Argument>, string>::Err(string::from("pass-arguments-to-command must be a JSON array"))
+    }
+}
+
+fn parse_match(cede node: JsonNode) -> Result<HeaderRule, string> {
+    match cede node {
+        auto ObjectNode('matching_fields) => {
+            auto matching_fields# = cede 'matching_fields
+            auto kind = optional_string(matching_fields, "type", "value")!
+            auto expected = optional_string(matching_fields, "value", "")!
+            auto secret = optional_string(matching_fields, "secret", "")!
+            auto regex = optional_string(matching_fields, "regex", "")!
+            auto ip_range = optional_string(matching_fields, "ip-range", "")!
+            if kind.as_str().equals("ip-whitelist") {
+                if ip_range.len() == 0:usize { return Result<HeaderRule, string>::Err(string::from("ip-whitelist requires ip-range")) }
+                return Result<HeaderRule, string>::Ok(HeaderRule(name = string::from("X-Toka-Webhook-Remote-Addr"),
+                    value = string::from(""), kind = cede kind, secret = cede ip_range))
+            }
+            auto parameter_node = required_field(matching_fields, "parameter")!
+            match cede parameter_node {
+                auto ObjectNode('parameter_fields) => {
+                    auto parameter_fields# = cede 'parameter_fields
+                    auto source = string_value(cede required_field(parameter_fields, "source")!)!
+                    if !source.as_str().equals("header") {
+                        return Result<HeaderRule, string>::Err(string::from("only header trigger-rule parameters are supported"))
+                    }
+                    auto name = string_value(cede required_field(parameter_fields, "name")!)!
+                    if !kind.as_str().equals("value") && !kind.as_str().equals("regex") && !kind.as_str().equals("payload-hmac-sha1") &&
+                       !kind.as_str().equals("payload-hmac-sha256") && !kind.as_str().equals("payload-hmac-sha512") &&
+                       !kind.as_str().equals("payload-hash-sha1") && !kind.as_str().equals("payload-hash-sha256") &&
+                       !kind.as_str().equals("payload-hash-sha512") {
+                        return Result<HeaderRule, string>::Err(string::from("unsupported trigger-rule match type"))
+                    }
+                    if kind.as_str().equals("regex") && regex.len() == 0:usize {
+                        return Result<HeaderRule, string>::Err(string::from("regex trigger-rule requires regex"))
+                    }
+                    if !kind.as_str().equals("value") && !kind.as_str().equals("regex") && secret.len() == 0:usize {
+                        return Result<HeaderRule, string>::Err(string::from("payload signature trigger-rule requires secret"))
+                    }
+                    auto stored_secret# = cede secret
+                    if kind.as_str().equals("regex") { stored_secret = cede regex }
+                    return Result<HeaderRule, string>::Ok(HeaderRule(name = cede name, value = cede expected,
+                        kind = cede kind, secret = cede stored_secret))
+                }
+                _ => return Result<HeaderRule, string>::Err(string::from("trigger-rule parameter must be an object"))
+            }
+        }
+        _ => return Result<HeaderRule, string>::Err(string::from("trigger-rule match must be an object"))
+    }
+}
+
+fn parse_rule_list(cede node: JsonNode) -> Result<Vec<TriggerRule>, string> {
+    match cede node {
+        auto ArrayNode('items) => {
+            auto items# = cede 'items
+            auto rules# = Vec<TriggerRule>::new()
+            loop !items.is_empty() {
+                auto item = items#.remove(0:usize)
+                if item.is_none() { return Result<Vec<TriggerRule>, string>::Err(string::from("trigger-rule array changed during parse")) }
+                auto rule = parse_rule(cede item.unwrap())
+                if rule.is_err() { return Result<Vec<TriggerRule>, string>::Err(rule.unwrap_err()) }
+                rules#.push(cede rule.unwrap())
+            }
+            return Result<Vec<TriggerRule>, string>::Ok(cede rules)
+        }
+        _ => return Result<Vec<TriggerRule>, string>::Err(string::from("and/or trigger-rule must be an array"))
+    }
+}
+
+fn parse_rule(cede node: JsonNode) -> Result<TriggerRule, string> {
+    match cede node {
+        auto ObjectNode('fields) => {
+            auto fields# = cede 'fields
+            auto matching = fields#.remove(string::from("match"))
+            if matching.is_some() {
+                auto rule = parse_match(cede matching.unwrap())
+                if rule.is_err() { return Result<TriggerRule, string>::Err(rule.unwrap_err()) }
+                return Result<TriggerRule, string>::Ok(TriggerRule::MatchNode(cede rule.unwrap()))
+            }
+            auto and_node = fields#.remove(string::from("and"))
+            if and_node.is_some() {
+                auto rules = parse_rule_list(cede and_node.unwrap())
+                if rules.is_err() { return Result<TriggerRule, string>::Err(rules.unwrap_err()) }
+                return Result<TriggerRule, string>::Ok(TriggerRule::AndNode(cede rules.unwrap()))
+            }
+            auto or_node = fields#.remove(string::from("or"))
+            if or_node.is_some() {
+                auto rules = parse_rule_list(cede or_node.unwrap())
+                if rules.is_err() { return Result<TriggerRule, string>::Err(rules.unwrap_err()) }
+                return Result<TriggerRule, string>::Ok(TriggerRule::OrNode(cede rules.unwrap()))
+            }
+            auto not_node = fields#.remove(string::from("not"))
+            if not_node.is_some() {
+                auto rule = parse_rule(cede not_node.unwrap())
+                if rule.is_err() { return Result<TriggerRule, string>::Err(rule.unwrap_err()) }
+                return Result<TriggerRule, string>::Ok(cede negate_rule(cede rule.unwrap()))
+            }
+            return Result<TriggerRule, string>::Err(string::from("trigger-rule has no supported operator"))
+        }
+        _ => return Result<TriggerRule, string>::Err(string::from("trigger-rule must be an object"))
+    }
+}
+
+fn negate_rule(cede rule: TriggerRule) -> TriggerRule {
+    match cede rule {
+        auto MatchNode('match) => {
+            auto rule_match# = cede 'match
+            if rule_match.kind.as_str().starts_with("not:") {
+                rule_match.kind = text_slice(rule_match.kind.as_str(), 4:usize, rule_match.kind.len())
+            } else {
+                auto negated# = string::from("not:")
+                negated#.push_str(rule_match.kind.as_str())
+                rule_match.kind = cede negated
+            }
+            return TriggerRule::MatchNode(cede rule_match)
+        }
+        auto AndNode('rules) => {
+            auto rules = cede 'rules
+            return TriggerRule::OrNode(cede negate_rule_list(cede rules))
+        }
+        auto OrNode('rules) => {
+            auto rules = cede 'rules
+            return TriggerRule::AndNode(cede negate_rule_list(cede rules))
+        }
+        auto NotNode('rules) => {
+            auto rules# = cede 'rules
+            if rules.len() == 1:usize {
+                auto child = rules#.remove(0:usize)
+                if child.is_some() { return child.unwrap() }
+            }
+            return TriggerRule::AndNode(cede rules)
+        }
+    }
+}
+
+fn negate_rule_list(cede input: Vec<TriggerRule>) -> Vec<TriggerRule> {
+    auto rules# = cede input
+    auto result# = Vec<TriggerRule>::new()
+    loop !rules#.is_empty() {
+        auto child = rules#.remove(0:usize)
+        if child.is_some() { result#.push(cede negate_rule(cede child.unwrap())) }
+    }
+    return result
+}
+
+fn parse_hook(cede node: JsonNode) -> Result<Hook, string> {
+    match cede node {
+        auto ObjectNode('fields) => {
+            auto fields# = cede 'fields
+            auto id = string_value(cede required_field(fields, "id")!)!
+            auto command = string_value(cede required_field(fields, "execute-command")!)!
+            auto args = optional_args(fields)!
+            auto working_dir = optional_string(fields, "command-working-directory", "")!
+            auto environment = optional_environment(fields)!
+            auto files = optional_files(fields)!
+            auto response_message = optional_string(fields, "response-message", "hook triggered")!
+            auto capture_output = optional_bool(fields, "include-command-output-in-response", false)!
+            auto capture_output_on_error = optional_bool(fields, "include-command-output-in-response-on-error", false)!
+            auto success_status = optional_status(fields, "success-http-response-code", 200:i32)!
+            auto mismatch_status = optional_status(fields, "trigger-rule-mismatch-http-response-code", 400:i32)!
+            auto response_headers = optional_response_headers(fields)!
+            auto methods = optional_methods(fields)!
+            auto incoming_content_type = optional_string(fields, "incoming-payload-content-type", "")!
+            auto rule = parse_rule(cede required_field(fields, "trigger-rule")!)!
+            auto hook# = Hook::new(cede id, cede command, cede args, cede working_dir,
+                                   cede string::from(""), cede string::from(""), cede string::from("value"), cede string::from(""))
+            hook.environment = cede environment
+            hook.files = cede files
+            hook.response_message = cede response_message
+            hook.capture_output = capture_output
+            hook.capture_output_on_error = capture_output_on_error
+            hook.success_status = success_status
+            hook.mismatch_status = mismatch_status
+            hook.response_headers = cede response_headers
+            hook.methods = cede methods
+            hook.rule = cede rule
+            if incoming_content_type.len() > 0:usize {
+                hook.required_header = string::from("incoming-payload-content-type")
+                hook.required_value = cede incoming_content_type
+            }
+            return Result<Hook, string>::Ok(cede hook)
+        }
+        _ => return Result<Hook, string>::Err(string::from("each hook must be a JSON object"))
+    }
+}
+
+// Parses the common upstream JSON shape. The accepted trigger rule is the
+// value/header match; request-derived command interpolation is rejected.
+fn parse_hook_root(cede root: JsonNode) -> Result<Vec<Hook>, string> {
+    match cede root {
+        auto ArrayNode('items) => {
+            auto items# = cede 'items
+            auto hooks# = Vec<Hook>::new()
+            loop !items.is_empty() {
+                auto item = items#.remove(0:usize)
+                if item.is_none() { return Result<Vec<Hook>, string>::Err(string::from("hook array changed during parse")) }
+                auto parsed_hook = parse_hook(cede item.unwrap())
+                if parsed_hook.is_err() { return Result<Vec<Hook>, string>::Err(parsed_hook.unwrap_err()) }
+                hooks#.push(cede parsed_hook.unwrap())
+            }
+            return Result<Vec<Hook>, string>::Ok(cede hooks)
+        }
+        _ => return Result<Vec<Hook>, string>::Err(string::from("hook configuration root must be a JSON array"))
+    }
+}
+
+pub fn parse_hooks(json: str) -> Result<Vec<Hook>, string> {
+    auto root# = JsonNode::NullNode(0):JsonNode
+    auto parsed = root#.parse_json(json)
+    if parsed.is_err() { return Result<Vec<Hook>, string>::Err(parsed.unwrap_err()) }
+    return parse_hook_root(cede root)
+}
+
+pub fn parse_yaml_hooks(input: str) -> Result<Vec<Hook>, string> {
+    auto parsed = yaml::parse(input)
+    if parsed.is_err() {
+        auto error = parsed.unwrap_err()
+        return Result<Vec<Hook>, string>::Err(error.message())
+    }
+    return parse_hook_root(cede parsed.unwrap())
+}
+
+fn template_getenv(name: str) -> Result<string, string> {
+    auto value = env::var(string::from(name))
+    if value.is_some() { return Result<string, string>::Ok(value.unwrap()) }
+    return Result<string, string>::Ok(string::from(""))
+}
+
+fn template_cat(name: str) -> Result<string, string> {
+    auto contents = read_to_string(string::from(name))
+    if contents.is_err() { return Result<string, string>::Ok(string::from("")) }
+    auto text# = contents.unwrap()
+    if text.len() > 0:usize && text.as_str().byte_at(text.len() - 1:usize) as u8 == '\n' as u8 {
+        auto _newline = text#.pop_char()
+    }
+    return Result<string, string>::Ok(cede text)
+}
+
+fn template_credential(name: str) -> Result<string, string> {
+    auto directory = env::var(string::from("CREDENTIALS_DIRECTORY"))
+    if directory.is_some() {
+        auto path = directory.unwrap()
+        if path.len() > 0:usize {
+            auto credential_path = join(path, string::from(name))
+            return template_cat(credential_path.as_str())
+        }
+    }
+    return template_getenv(name)
+}
+
+pub fn render_hooks_template(input: str) -> Result<string, string> {
+    auto parsed = Template::parse(input)
+    if parsed.is_err() { return Result<string, string>::Err(parsed.unwrap_err().to_string()) }
+    auto getenv_handler = { name => template_getenv(name) }: fn(str) -> Result<string, string>
+    auto cat_handler = { name => template_cat(name) }: fn(str) -> Result<string, string>
+    auto credential_handler = { name => template_credential(name) }: fn(str) -> Result<string, string>
+    auto context# = TemplateContext::new()
+    context#.register_func(cede string::from("getenv"), getenv_handler)
+    context#.register_func(cede string::from("cat"), cat_handler)
+    context#.register_func(cede string::from("credential"), credential_handler)
+    auto rendered = parsed.unwrap().render(context)
+    if rendered.is_err() { return Result<string, string>::Err(rendered.unwrap_err().to_string()) }
+    return Result<string, string>::Ok(rendered.unwrap())
+}
+
+pub fn load_hooks_with_template(path: string, as_template: bool) -> Result<Vec<Hook>, string> {
+    auto contents = read_to_string(path)
+    if contents.is_err() { return Result<Vec<Hook>, string>::Err(contents.unwrap_err()) }
+    auto text# = contents.unwrap()
+    if as_template {
+        auto rendered = render_hooks_template(text.as_str())
+        if rendered.is_err() { return Result<Vec<Hook>, string>::Err(rendered.unwrap_err()) }
+        text = rendered.unwrap()
+    }
+    auto json = parse_hooks(text.as_str())
+    if json.is_ok() { return json }
+    return parse_yaml_hooks(text.as_str())
+}
+
+pub fn load_hooks(path: string) -> Result<Vec<Hook>, string> {
+    return load_hooks_with_template(path, false)
+}
+
+pub fn load_hook_files(cede paths: Vec<string>, as_template: bool) -> Result<Vec<Hook>, string> {
+    auto remaining# = cede paths
+    auto hooks# = Vec<Hook>::new()
+    loop !remaining.is_empty() {
+        auto next = remaining#.remove(0:usize)
+        if next.is_none() { return Result<Vec<Hook>, string>::Err(string::from("hooks path list changed during load")) }
+        auto loaded = load_hooks_with_template(next.unwrap(), as_template)
+        if loaded.is_err() { return Result<Vec<Hook>, string>::Err(loaded.unwrap_err()) }
+        auto file_hooks# = loaded.unwrap()
+        loop !file_hooks.is_empty() {
+            auto hook = file_hooks#.remove(0:usize)
+            if hook.is_none() { return Result<Vec<Hook>, string>::Err(string::from("loaded hooks changed during merge")) }
+            hooks#.push(cede hook.unwrap())
+        }
+    }
+    return Result<Vec<Hook>, string>::Ok(cede hooks)
+}
+
+fn expected_path(hook: Hook) -> string {
+    return expected_path_at_prefix(hook, "hooks")
+}
+
+fn expected_path_at_prefix(hook: Hook, prefix: str) -> string {
+    auto value# = string::from("/")
+    if prefix.len() > 0:usize {
+        value#.push_str(prefix)
+        value#.push_str("/")
+    }
+    value#.push_str(hook.id.as_str())
+    return value
+}
+
+fn text_slice(source: str, start: usize, end: usize) -> string {
+    auto value# = string::from("")
+    auto index# = start
+    loop index < end {
+        value#.push_char(source.byte_at(index) as char)
+        index = index + 1:usize
+    }
+    return value
+}
+
+fn route_path(path: str) -> string {
+    auto query = path.index_of('?')
+    if query.is_none() { return string::from(path) }
+    return text_slice(path, 0:usize, query.unwrap())
+}
+
+fn authorized(hook: Hook, request: HttpRequest) -> bool {
+    match hook.rule {
+        auto MatchNode('rule) => return evaluate_match(cede 'rule, request)
+        auto AndNode('rules) => return evaluate_top_level_and(cede 'rules, request)
+        auto OrNode('rules) => return evaluate_top_level_or(cede 'rules, request)
+        auto NotNode('rules) => return evaluate_rule(TriggerRule::NotNode(cede 'rules), request)
+    }
+}
+
+// Avoid recursively reusing an HttpRequest for the common n-ary case.  The
+// current runtime's by-value lowering is stable for one matcher at a time.
+fn evaluate_top_level_and(cede input: Vec<TriggerRule>, request: HttpRequest) -> bool {
+    auto rules# = cede input
+    loop !rules.is_empty() {
+        auto child = rules#.remove(0:usize)
+        if child.is_none() { return false }
+        match cede child.unwrap() {
+            auto MatchNode('rule) => {
+                if !evaluate_match(cede 'rule, request) { return false }
+            }
+            auto AndNode('nested) => {
+                if !evaluate_top_level_and(cede 'nested, request) { return false }
+            }
+            auto OrNode('nested) => {
+                if !evaluate_top_level_or(cede 'nested, request) { return false }
+            }
+            auto NotNode('nested) => {
+                if !evaluate_rule(TriggerRule::NotNode(cede 'nested), request) { return false }
+            }
+        }
+    }
+    return true
+}
+
+fn evaluate_top_level_or(cede input: Vec<TriggerRule>, request: HttpRequest) -> bool {
+    auto rules# = cede input
+    loop !rules.is_empty() {
+        auto child = rules#.remove(0:usize)
+        if child.is_some() {
+            match cede child.unwrap() {
+                auto MatchNode('rule) => {
+                    if evaluate_match(cede 'rule, request) { return true }
+                }
+                auto AndNode('nested) => {
+                    if evaluate_top_level_and(cede 'nested, request) { return true }
+                }
+                auto OrNode('nested) => {
+                    if evaluate_top_level_or(cede 'nested, request) { return true }
+                }
+                auto NotNode('nested) => {
+                    if evaluate_rule(TriggerRule::NotNode(cede 'nested), request) { return true }
+                }
+            }
+        }
+    }
+    return false
+}
+
+fn evaluate_match(rule: HeaderRule, request: HttpRequest) -> bool {
+    auto actual = request.headers.get(rule.name.as_str())
+    auto kind# = rule.kind.clone()
+    auto negated# = false
+    if kind.as_str().starts_with("not:") {
+        negated = true
+        kind = text_slice(kind.as_str(), 4:usize, kind.len())
+    }
+    if actual.is_none() { return negated }
+    auto matched# = false
+    if kind.as_str().equals("ip-whitelist") {
+        auto host = ipv4_host(actual.unwrap().as_str())
+        if host.is_ok() { matched = ipv4_in_ranges(host.unwrap().as_str(), rule.secret.as_str()) }
+    } else if kind.as_str().equals("regex") {
+        matched = posix_regex_matches(rule.secret.as_str(), actual.unwrap().as_str())
+    } else if !kind.as_str().equals("value") {
+        matched = valid_payload_signature(kind.as_str(), rule.secret.as_str(),
+                                          actual.unwrap().as_str(), request.body.as_str())
+    } else {
+        matched = actual.unwrap().as_str().equals(rule.value.as_str())
+    }
+    if negated { return !matched }
+    return matched
+}
+
+fn ipv4_number(text: str) -> Result<u32, string> {
+    auto value# = 0:u32
+    auto component# = 0:u32
+    auto count# = 0:usize
+    auto index# = 0:usize
+    auto has_digit# = false
+    loop index <= text.len() {
+        if index == text.len() || text.byte_at(index) == '.' {
+            if count >= 4:usize || !has_digit || component > 255:u32 { return Result<u32, string>::Err(string::from("invalid IPv4 address")) }
+            value = (value << 8:u32) | component
+            component = 0:u32
+            count = count + 1:usize
+            has_digit = false
+        } else {
+            auto byte = text.byte_at(index)
+            if byte < '0' || byte > '9' { return Result<u32, string>::Err(string::from("invalid IPv4 address")) }
+            component = component * 10:u32 + (byte as u32 - '0' as u32)
+            has_digit = true
+        }
+        index = index + 1:usize
+    }
+    if count != 4:usize { return Result<u32, string>::Err(string::from("invalid IPv4 address")) }
+    return Result<u32, string>::Ok(value)
+}
+
+fn ipv4_host(text: str) -> Result<string, string> {
+    auto separator = text.index_of(':')
+    if separator.is_none() { return Result<string, string>::Ok(string::from(text)) }
+    auto at = separator.unwrap()
+    if at == 0:usize { return Result<string, string>::Err(string::from("invalid IPv4 peer address")) }
+    return Result<string, string>::Ok(text_slice(text, 0:usize, at))
+}
+
+fn ipv4_in_ranges(address: str, ranges: str) -> bool {
+    auto parsed = ipv4_number(address)
+    if parsed.is_err() { return false }
+    auto target = parsed.unwrap()
+    auto offset# = 0:usize
+    loop offset < ranges.len() {
+        loop offset < ranges.len() && ranges.byte_at(offset) == ' ' { offset = offset + 1:usize }
+        auto end# = offset
+        loop end < ranges.len() && ranges.byte_at(end) != ' ' { end = end + 1:usize }
+        if end > offset {
+            auto item = text_slice(ranges, offset, end)
+            auto slash = item.as_str().index_of('/')
+            auto address_part# = item.clone()
+            auto bits# = 32:u32
+            if slash.is_some() {
+                auto slash_at = slash.unwrap()
+                address_part = text_slice(item.as_str(), 0:usize, slash_at)
+                auto bits_text = text_slice(item.as_str(), slash_at + 1:usize, item.len())
+                auto digit# = 0:usize
+                auto digit_count# = 0:usize
+                bits = 0:u32
+                loop digit < bits_text.len() {
+                    auto byte = bits_text.byte_at(digit)
+                    if byte < '0' || byte > '9' || digit_count >= 2:usize { bits = 33:u32; break }
+                    bits = bits * 10:u32 + (byte as u32 - '0' as u32)
+                    digit_count = digit_count + 1:usize
+                    digit = digit + 1:usize
+                }
+                if digit_count == 0:usize { bits = 33:u32 }
+            }
+            auto network = ipv4_number(address_part.as_str())
+            if network.is_ok() && bits <= 32:u32 {
+                if bits == 0:u32 { return true }
+                auto mask = (0xFFFFFFFF:u32) << (32:u32 - bits)
+                auto target_prefix = target & mask
+                auto network_value = network.unwrap()
+                auto network_prefix = network_value & mask
+                if target_prefix == network_prefix { return true }
+            }
+        }
+        offset = end + 1:usize
+    }
+    return false
+}
+
+// Toka's bundled regex package is not stable when the same rule accepts and
+// later rejects a request.  Linux and macOS provide these tools, and mktemp
+// gives the matcher an unguessable, exclusive input file without a shell.
+fn posix_regex_matches(pattern: str, value: str) -> bool {
+    auto maker# = Command::new(string::from("/usr/bin/mktemp"))
+    maker#.arg(string::from("-t"))
+    maker#.arg(string::from("toka-webhook-regex"))
+    maker#.stdin(STDIO_NULL)
+    maker#.stderr(STDIO_NULL)
+    auto created = maker#.output()
+    if created.is_err() { return false }
+    auto path = created.unwrap().stdout.trim()
+    if path.len() == 0:usize { return false }
+    auto written = write_string(path.clone(), value)
+    if written.is_err() {
+        remove_file(cede path)
+        return false
+    }
+    auto matcher# = Command::new(string::from("/usr/bin/grep"))
+    matcher#.arg(string::from("-E"))
+    matcher#.arg(string::from("-q"))
+    matcher#.arg(string::from("--"))
+    matcher#.arg(string::from(pattern))
+    matcher#.arg(path.clone())
+    matcher#.stdin(STDIO_NULL)
+    matcher#.stdout(STDIO_NULL)
+    matcher#.stderr(STDIO_NULL)
+    auto result = matcher#.try_status()
+    auto removed = remove_file(cede path)
+    if result.is_err() { return false }
+    return result.unwrap().success()
+}
+
+fn evaluate_rule(rule: TriggerRule, request: HttpRequest) -> bool {
+    match rule {
+        auto MatchNode('match) => return evaluate_match(cede 'match, request)
+        auto AndNode('rules) => {
+            auto rules# = cede 'rules
+            loop !rules.is_empty() {
+                auto child = rules#.remove(0:usize)
+                if child.is_none() { return false }
+                if !evaluate_rule(cede child.unwrap(), request) { return false }
+            }
+            return true
+        }
+        auto OrNode('rules) => {
+            auto rules# = cede 'rules
+            loop !rules.is_empty() {
+                auto child = rules#.remove(0:usize)
+                if child.is_some() {
+                    if evaluate_rule(cede child.unwrap(), request) { return true }
+                }
+            }
+            return false
+        }
+        auto NotNode('rules) => {
+            auto rules# = cede 'rules
+            if rules.len() != 1:usize { return false }
+            auto child = rules#.remove(0:usize)
+            if child.is_none() { return false }
+            return !evaluate_rule(cede child.unwrap(), request)
+        }
+    }
+}
+
+fn bytes_from_text(text: str) -> Bytes {
+    auto raw# = Vec<u8>::with_capacity(text.len())
+    auto index# = 0:usize
+    loop index < text.len() {
+        raw#.push(text.byte_at(index) as u8)
+        index = index + 1:usize
+    }
+    return Bytes::from_vec(cede raw)
+}
+
+fn valid_payload_signature(kind: str, secret: str, received: str, body: str) -> bool {
+    auto prefix# = "sha1="
+    if kind.equals("payload-hmac-sha256") || kind.equals("payload-hash-sha256") { prefix = "sha256=" }
+    else if kind.equals("payload-hmac-sha512") || kind.equals("payload-hash-sha512") { prefix = "sha512=" }
+    else if !kind.equals("payload-hmac-sha1") && !kind.equals("payload-hash-sha1") { return false }
+
+    auto source = string::from(received)
+    auto candidates# = source.split(',' as i32)
+    loop !candidates.is_done() {
+        auto candidate = candidates#.next().trim()
+        if candidate.as_str().starts_with(prefix) {
+            auto encoded = candidate.substring(prefix.len() as i32, candidate.len() as i32)
+            auto decoded = hex::decode(encoded.as_str())
+            if decoded.is_ok() {
+                auto expected = Bytes::from_vec(cede decoded.unwrap())
+                auto key = bytes_from_text(secret)
+                auto payload = bytes_from_text(body)
+                auto sha1_kind = kind.equals("payload-hmac-sha1") || kind.equals("payload-hash-sha1")
+                auto sha256_kind = kind.equals("payload-hmac-sha256") || kind.equals("payload-hash-sha256")
+                auto sha512_kind = kind.equals("payload-hmac-sha512") || kind.equals("payload-hash-sha512")
+                if sha1_kind && hmac_sha1_verify(key.as_slice(), payload.as_slice(), expected.as_slice()) { return true }
+                if sha256_kind && hmac_sha256_verify(key.as_slice(), payload.as_slice(), expected.as_slice()) { return true }
+                if sha512_kind && hmac_sha512_verify(key.as_slice(), payload.as_slice(), expected.as_slice()) { return true }
+            }
+        }
+    }
+    return false
+}
+
+fn hook_content_type(hook: Hook, request: HttpRequest) -> Option<string> {
+    if hook.required_header.as_str().equals("incoming-payload-content-type") {
+        return Option<string>::Some(hook.required_value.clone())
+    }
+    auto content_type = request.headers.get("content-type")
+    if content_type.is_none() { return Option<string>::None }
+    return Option<string>::Some(content_type.unwrap())
+}
+
+fn resolve_argument(argument: Argument, hook: Hook, request: HttpRequest) -> Result<string, string> {
+    if argument.source.as_str().equals("string") { return Result<string, string>::Ok(argument.name.clone()) }
+    if argument.source.as_str().equals("header") {
+        auto value = request.headers.get(argument.name.as_str())
+        if value.is_none() { return Result<string, string>::Err(string::from("required request header is missing")) }
+        return Result<string, string>::Ok(value.unwrap())
+    }
+    if argument.source.as_str().equals("url") || argument.source.as_str().equals("query") {
+        return query_argument(request.path.as_str(), argument.name.as_str())
+    }
+    if argument.source.as_str().equals("payload") {
+        auto content_type = hook_content_type(hook, request)
+        if content_type.is_some() {
+            auto content_type_value = content_type.unwrap()
+            if content_type_value.as_str().starts_with("application/x-www-form-urlencoded") {
+                return form_argument(request.body.as_str(), argument.name.as_str())
+            }
+            if content_type_value.as_str().starts_with("multipart/form-data") {
+                return multipart_argument(request.body.as_str(), content_type_value.as_str(), argument.name.as_str())
+            }
+            if content_type_value.as_str().starts_with("application/xml") || content_type_value.as_str().starts_with("text/xml") {
+                return xml_argument(request.body.as_str(), argument.name.as_str())
+            }
+        }
+        return payload_argument(request.body.as_str(), argument.name.as_str())
+    }
+    if argument.source.as_str().equals("raw-request-body") { return Result<string, string>::Ok(request.body.clone()) }
+    if argument.source.as_str().equals("entire-payload") { return entire_payload_json(hook, request) }
+    if argument.source.as_str().equals("entire-query") { return entire_query_json(request.path.as_str()) }
+    if argument.source.as_str().equals("entire-headers") { return Result<string, string>::Ok(headers_json(request.headers)) }
+    if argument.source.as_str().equals("request") && argument.name.as_str().equals("method") {
+        return Result<string, string>::Ok(request_method(request.method, request.headers))
+    }
+    if argument.source.as_str().equals("request") && argument.name.as_str().equals("remote-addr") {
+        auto address = request.headers.get("x-toka-webhook-remote-addr")
+        match address {
+            auto Some(&value) => {
+                if value.len() == 0:usize { return Result<string, string>::Err(string::from("remote address is unavailable")) }
+                return Result<string, string>::Ok(value.clone())
+            }
+            auto None => return Result<string, string>::Err(string::from("remote address is unavailable"))
+        }
+    }
+    return Result<string, string>::Err(string::from("unsupported request argument source"))
+}
+
+fn headers_json(headers: HeaderMap) -> string {
+    auto text# = string::from("{")
+    auto index# = 0:usize
+    loop index < headers.entries.len() {
+        if index > 0:usize { text#.push_str(",") }
+        auto entry = headers.entries.get_ref(index).clone()
+        write_escaped_json_string(entry.key.as_str(), text)
+        text#.push_str(":")
+        write_escaped_json_string(entry.value.as_str(), text)
+        index = index + 1:usize
+    }
+    text#.push_str("}")
+    return text
+}
+
+fn entire_payload_json(hook: Hook, request: HttpRequest) -> Result<string, string> {
+    auto content_type = hook_content_type(hook, request)
+    match content_type {
+        auto Some(&value) => {
+            if !value.as_str().starts_with("application/json") { return Result<string, string>::Ok(string::from("null")) }
+        }
+        auto None => return Result<string, string>::Ok(string::from("null"))
+    }
+    auto node# = JsonNode::NullNode(0):JsonNode
+    auto parsed = node#.parse_json(request.body.as_str())
+    if parsed.is_err() { return Result<string, string>::Err(string::from("request payload is not valid JSON")) }
+    match cede node {
+        auto ObjectNode('fields) => return Result<string, string>::Ok(request.body.clone())
+        auto ArrayNode('items) => {
+            auto result# = string::from("{\"root\":")
+            result#.push_str(request.body.as_str())
+            result#.push_str("}")
+            return Result<string, string>::Ok(cede result)
+        }
+        _ => return Result<string, string>::Ok(string::from("null"))
+    }
+}
+
+fn entire_query_json(path: str) -> Result<string, string> {
+    auto marker = path.index_of('?')
+    if marker.is_none() { return Result<string, string>::Ok(string::from("{}")) }
+    auto query = text_slice(path, marker.unwrap() + 1:usize, path.len())
+    auto result# = string::from("{")
+    auto first# = true
+    auto offset# = 0:usize
+    loop offset <= query.len() {
+        auto end# = offset
+        loop end < query.len() && query.byte_at(end) != '&' { end = end + 1:usize }
+        auto piece = text_slice(query.as_str(), offset, end)
+        auto equals = piece.as_str().index_of('=')
+        auto raw_key# = piece.clone()
+        auto raw_value# = string::from("")
+        if equals.is_some() {
+            auto split_at = equals.unwrap()
+            raw_key = text_slice(piece.as_str(), 0:usize, split_at)
+            raw_value = text_slice(piece.as_str(), split_at + 1:usize, piece.len())
+        }
+        auto key = query_decode(cede raw_key)
+        auto value = query_decode(cede raw_value)
+        if key.is_err() || value.is_err() { return Result<string, string>::Err(string::from("invalid URL query encoding")) }
+        if !first { result#.push_str(",") }
+        first = false
+        write_escaped_json_string(key.unwrap().as_str(), result)
+        result#.push_str(":")
+        write_escaped_json_string(value.unwrap().as_str(), result)
+        if end == query.len() { break }
+        offset = end + 1:usize
+    }
+    result#.push_str("}")
+    return Result<string, string>::Ok(cede result)
+}
+
+fn parse_array_index(text: str) -> Result<usize, string> {
+    if text.len() == 0:usize { return Result<usize, string>::Err(string::from("payload array index is empty")) }
+    auto value# = 0:usize
+    auto index# = 0:usize
+    loop index < text.len() {
+        auto byte = text.byte_at(index)
+        if byte < '0' || byte > '9' { return Result<usize, string>::Err(string::from("payload array index is invalid")) }
+        value = value * 10:usize + (byte - '0') as usize
+        index = index + 1:usize
+    }
+    return Result<usize, string>::Ok(value)
+}
+
+fn payload_scalar(cede node: JsonNode) -> Result<string, string> {
+    match cede node {
+        auto StrNode('text) => return Result<string, string>::Ok(cede 'text)
+        auto BoolNode(value) => {
+            if value { return Result<string, string>::Ok(string::from("true")) }
+            return Result<string, string>::Ok(string::from("false"))
+        }
+        auto NumNode(value) => return Result<string, string>::Ok(string::from_f64(value))
+        _ => return Result<string, string>::Err(string::from("payload reference is not a scalar"))
+    }
+}
+
+fn json_payload_is_array(body: str) -> bool {
+    auto index# = 0:usize
+    loop index < body.len() {
+        auto byte = body.byte_at(index)
+        if byte != ' ' && byte != '\t' && byte != '\r' && byte != '\n' { return byte == '[' }
+        index = index + 1:usize
+    }
+    return false
+}
+
+fn payload_argument(body: str, name: str) -> Result<string, string> {
+    auto node# = JsonNode::NullNode(0):JsonNode
+    auto parsed = node#.parse_json(body)
+    if parsed.is_err() { return Result<string, string>::Err(string::from("request payload is not valid JSON")) }
+    auto remaining# = string::from(name)
+    if json_payload_is_array(body) && remaining.as_str().starts_with("root.") {
+        remaining = text_slice(remaining.as_str(), 5:usize, remaining.len())
+    }
+    loop true {
+        match cede node {
+            auto ObjectNode('fields) => {
+                auto fields# = cede 'fields
+                auto exact = fields#.remove(remaining.clone())
+                if exact.is_some() { return payload_scalar(cede exact.unwrap()) }
+                auto dot = remaining.as_str().index_of('.')
+                if dot.is_none() { return Result<string, string>::Err(string::from("payload field is missing")) }
+                auto split_at = dot.unwrap()
+                auto key = text_slice(remaining.as_str(), 0:usize, split_at)
+                auto next = fields#.remove(key)
+                if next.is_none() { return Result<string, string>::Err(string::from("payload field is missing")) }
+                remaining = text_slice(remaining.as_str(), split_at + 1:usize, remaining.len())
+                node = next.unwrap()
+            }
+            auto ArrayNode('items) => {
+                auto items# = cede 'items
+                auto dot = remaining.as_str().index_of('.')
+                if dot.is_none() {
+                    auto index = parse_array_index(remaining.as_str())
+                    if index.is_err() { return Result<string, string>::Err(string::from("payload array item is missing")) }
+                    auto next = items#.remove(index.unwrap())
+                    if next.is_none() { return Result<string, string>::Err(string::from("payload array item is missing")) }
+                    return payload_scalar(cede next.unwrap())
+                }
+                auto split_at = dot.unwrap()
+                auto part = text_slice(remaining.as_str(), 0:usize, split_at)
+                auto index = parse_array_index(part.as_str())
+                if index.is_err() { return Result<string, string>::Err(string::from("payload array item is missing")) }
+                auto next = items#.remove(index.unwrap())
+                if next.is_none() { return Result<string, string>::Err(string::from("payload array item is missing")) }
+                remaining = text_slice(remaining.as_str(), split_at + 1:usize, remaining.len())
+                node = next.unwrap()
+            }
+            _ => return Result<string, string>::Err(string::from("payload path traverses a scalar"))
+        }
+    }
+    return Result<string, string>::Err(string::from("payload path is invalid"))
+}
+
+fn query_argument(path: str, name: str) -> Result<string, string> {
+    auto marker = path.index_of('?')
+    if marker.is_none() { return Result<string, string>::Err(string::from("required URL query value is missing")) }
+    auto query = text_slice(path, marker.unwrap() + 1:usize, path.len())
+    auto offset# = 0:usize
+    loop offset <= query.len() {
+        auto end# = offset
+        loop end < query.len() && query.byte_at(end) != '&' { end = end + 1:usize }
+        auto piece = text_slice(query.as_str(), offset, end)
+        auto equals = piece.as_str().index_of('=')
+        auto raw_key# = piece.clone()
+        auto raw_value# = string::from("")
+        if equals.is_some() {
+            auto split_at = equals.unwrap()
+            raw_key = text_slice(piece.as_str(), 0:usize, split_at)
+            raw_value = text_slice(piece.as_str(), split_at + 1:usize, piece.len())
+        }
+        auto key = query_decode(cede raw_key)
+        if key.is_err() { return Result<string, string>::Err(string::from("invalid URL query encoding")) }
+        if key.unwrap().as_str().equals(name) {
+            auto value = query_decode(cede raw_value)
+            if value.is_err() { return Result<string, string>::Err(string::from("invalid URL query encoding")) }
+            return Result<string, string>::Ok(value.unwrap())
+        }
+        if end == query.len() { break }
+        offset = end + 1:usize
+    }
+    return Result<string, string>::Err(string::from("required URL query value is missing"))
+}
+
+fn form_argument(body: str, name: str) -> Result<string, string> {
+    auto offset# = 0:usize
+    loop offset <= body.len() {
+        auto end# = offset
+        loop end < body.len() && body.byte_at(end) != '&' { end = end + 1:usize }
+        auto piece = text_slice(body, offset, end)
+        auto equals = piece.as_str().index_of('=')
+        if equals.is_some() {
+            auto split_at = equals.unwrap()
+            auto raw_key = text_slice(piece.as_str(), 0:usize, split_at)
+            auto key = query_decode(cede raw_key)
+            if key.is_err() { return Result<string, string>::Err(string::from("invalid form encoding")) }
+            if key.unwrap().as_str().equals(name) {
+                auto raw_value = text_slice(piece.as_str(), split_at + 1:usize, piece.len())
+                auto value = query_decode(cede raw_value)
+                if value.is_err() { return Result<string, string>::Err(string::from("invalid form encoding")) }
+                return Result<string, string>::Ok(value.unwrap())
+            }
+        }
+        if end == body.len() { break }
+        offset = end + 1:usize
+    }
+    return Result<string, string>::Err(string::from("payload field is missing"))
+}
+
+fn multipart_boundary(content_type: str) -> Result<string, string> {
+    auto marker = substring_index(content_type, "boundary=")
+    if marker.is_none() { return Result<string, string>::Err(string::from("multipart boundary is missing")) }
+    auto start = marker.unwrap() + 9:usize
+    auto end# = start
+    loop end < content_type.len() && content_type.byte_at(end) != ';' { end = end + 1:usize }
+    auto boundary# = text_slice(content_type, start, end).trim()
+    if boundary.len() >= 2:usize && boundary.byte_at(0:usize) == '"' && boundary.byte_at(boundary.len() - 1:usize) == '"' {
+        boundary = text_slice(boundary.as_str(), 1:usize, boundary.len() - 1:usize)
+    }
+    if boundary.len() == 0:usize { return Result<string, string>::Err(string::from("multipart boundary is missing")) }
+    return Result<string, string>::Ok(cede boundary)
+}
+
+fn multipart_part_name(headers: str) -> Option<string> {
+    auto marker = substring_index(headers, "name=\"")
+    if marker.is_none() { return Option<string>::None }
+    auto start = marker.unwrap() + 6:usize
+    auto end = substring_index(text_slice(headers, start, headers.len()).as_str(), "\"")
+    if end.is_none() { return Option<string>::None }
+    return Option<string>::Some(text_slice(headers, start, start + end.unwrap()))
+}
+
+fn multipart_argument(body: str, content_type: str, name: str) -> Result<string, string> {
+    auto boundary = multipart_boundary(content_type)
+    if boundary.is_err() { return Result<string, string>::Err(boundary.unwrap_err()) }
+    auto marker# = string::from("--")
+    marker#.push_str(boundary.unwrap().as_str())
+    auto offset# = 0:usize
+    loop offset < body.len() {
+        auto found = substring_index(text_slice(body, offset, body.len()).as_str(), marker.as_str())
+        if found.is_none() { break }
+        auto part_start# = offset + found.unwrap() + marker.len()
+        if part_start + 1:usize < body.len() && body.byte_at(part_start) == '-' && body.byte_at(part_start + 1:usize) == '-' { break }
+        auto boundary_end = part_start + 1:usize
+        if boundary_end >= body.len() || body.byte_at(part_start) != '\r' || body.byte_at(boundary_end) != '\n' {
+            return Result<string, string>::Err(string::from("malformed multipart boundary"))
+        }
+        part_start = part_start + 2:usize
+        auto headers_end = substring_index(text_slice(body, part_start, body.len()).as_str(), "\r\n\r\n")
+        if headers_end.is_none() { return Result<string, string>::Err(string::from("malformed multipart headers")) }
+        auto header_end = part_start + headers_end.unwrap()
+        auto content_start = header_end + 4:usize
+        auto next = substring_index(text_slice(body, content_start, body.len()).as_str(), marker.as_str())
+        if next.is_none() { return Result<string, string>::Err(string::from("malformed multipart body")) }
+        auto marker_start = content_start + next.unwrap()
+        if marker_start < 2:usize || body.byte_at(marker_start - 2:usize) != '\r' || body.byte_at(marker_start - 1:usize) != '\n' {
+            return Result<string, string>::Err(string::from("malformed multipart boundary"))
+        }
+        auto part_name = multipart_part_name(text_slice(body, part_start, header_end).as_str())
+        if part_name.is_some() {
+            auto received_name = part_name.unwrap()
+            if received_name.as_str().equals(name) {
+                return Result<string, string>::Ok(text_slice(body, content_start, marker_start - 2:usize))
+            }
+        }
+        offset = marker_start
+    }
+    return Result<string, string>::Err(string::from("payload field is missing"))
+}
+
+// A bounded XML field resolver for the configuration-compatible dotted element
+// paths. It deliberately rejects attributes, namespaces, CDATA, entities, and
+// mixed content instead of guessing their text representation.
+fn xml_argument(xml: str, path: str) -> Result<string, string> {
+    if xml.index_of('<').is_none() { return Result<string, string>::Err(string::from("payload is not XML")) }
+    auto remaining# = string::from(path)
+    auto cursor# = 0:usize
+    loop remaining.len() > 0:usize {
+        auto dot = remaining.as_str().index_of('.')
+        auto final_segment# = dot.is_none()
+        auto name# = remaining.clone()
+        auto next_offset# = 0:usize
+        if !final_segment {
+            next_offset = dot.unwrap()
+            name = xml_slice(remaining.as_str(), 0:usize, next_offset)
+        }
+        if name.len() == 0:usize { return Result<string, string>::Err(string::from("XML payload path is invalid")) }
+        auto open# = string::from("<")
+        open#.push_str(name.as_str())
+        open#.push_str(">")
+        auto found = substring_index(xml_slice(xml, cursor, xml.len()).as_str(), open.as_str())
+        if found.is_none() { return Result<string, string>::Err(string::from("payload field is missing")) }
+        auto content_start = cursor + found.unwrap() + open.len()
+        auto close# = string::from("</")
+        close#.push_str(name.as_str())
+        close#.push_str(">")
+        auto close_at = substring_index(xml_slice(xml, content_start, xml.len()).as_str(), close.as_str())
+        if close_at.is_none() { return Result<string, string>::Err(string::from("malformed XML payload")) }
+        auto content_end = content_start + close_at.unwrap()
+        if final_segment {
+            auto value# = string::from("")
+            auto value_index# = content_start
+            loop value_index < content_end {
+                value#.push_byte_raw(xml.byte_at(value_index))
+                value_index = value_index + 1:usize
+            }
+            if value.index_of('<').is_some() || value.index_of('&').is_some() { return Result<string, string>::Err(string::from("XML value is not a scalar")) }
+            return Result<string, string>::Ok(cede value)
+        }
+        cursor = content_start
+        remaining = xml_slice(remaining.as_str(), next_offset + 1:usize, remaining.len())
+    }
+    return Result<string, string>::Err(string::from("XML payload path is invalid"))
+}
+
+fn xml_slice(source: str, start: usize, end: usize) -> string {
+    return string_slice(string::from(source), start, end - start)
+}
+
+fn substring_index(source: str, needle: str) -> Option<usize> {
+    if needle.len() == 0:usize { return Option<usize>::Some(0:usize) }
+    if needle.len() > source.len() { return Option<usize>::None }
+    auto offset# = 0:usize
+    loop offset + needle.len() <= source.len() {
+        auto index# = 0:usize
+        auto matches# = true
+        loop index < needle.len() {
+            if source.byte_at(offset + index) != needle.byte_at(index) {
+                matches = false
+                break
+            }
+            index = index + 1:usize
+        }
+        if matches { return Option<usize>::Some(offset) }
+        offset = offset + 1:usize
+    }
+    return Option<usize>::None
+}
+
+fn file_binding_content(binding: FileBinding, hook: Hook, request: HttpRequest) -> Result<string, string> {
+    auto argument = Argument(source = binding.source.clone(), name = binding.name.clone(), env_name = string::from(""))
+    auto resolved = resolve_argument(cede argument, hook, request)
+    if resolved.is_err() { return Result<string, string>::Err(resolved.unwrap_err()) }
+    if !binding.base64_decode { return resolved }
+
+    auto decoded = base64::decode(resolved.unwrap().as_str())
+    if decoded.is_err() { return Result<string, string>::Err(string::from("pass-file-to-command value is not valid Base64")) }
+    auto bytes# = decoded.unwrap()
+    auto content# = string::from("")
+    loop !bytes.is_empty() {
+        auto byte = bytes#.remove(0:usize)
+        if byte.is_some() { content#.push_byte_raw(byte.unwrap()) }
+    }
+    return Result<string, string>::Ok(cede content)
+}
+
+fn file_binding_environment_name(binding: FileBinding) -> string {
+    if binding.env_name.len() > 0:usize { return binding.env_name.clone() }
+    auto name# = string::from("HOOK_")
+    name#.push_str(binding.name.to_upper().as_str())
+    return name
+}
+
+fn cleanup_temp_files(files#: Vec<TempFile>) -> bool {
+    auto cleaned# = true
+    loop !files.is_empty() {
+        auto item = files#.remove(0:usize)
+        if item.is_some() {
+            auto file# = item.unwrap()
+            if file#.remove().is_err() { cleaned = false }
+        }
+    }
+    return cleaned
+}
+
+fn finish_with_temp_file_cleanup(cede result: Result<string, string>, cede files: Vec<TempFile>) -> Result<string, string> {
+    auto owned_files# = cede files
+    if !cleanup_temp_files(owned_files) {
+        return Result<string, string>::Err(string::from("temporary command file could not be removed"))
+    }
+    return cede result
+}
+
+fn create_command_temp_file(working_dir: string) -> Result<TempFile, IoError> {
+    if working_dir.len() > 0:usize { return create_temp_file(working_dir) }
+    return create_temp_file_system()
+}
+
+fn execute(hook: Hook, request: HttpRequest) -> Result<string, string> {
+    auto command# = Command::new(hook.command.clone())
+    if hook.working_dir.len() > 0:usize { command#.current_dir(hook.working_dir.clone()) }
+    auto index# = 0:usize
+    loop index < hook.args.len() {
+        auto argument = hook.args.get_ref(index).clone()
+        auto value = resolve_argument(argument, hook.clone(), request)
+        if value.is_err() { return Result<string, string>::Err(value.unwrap_err()) }
+        command#.arg(cede value.unwrap())
+        index = index + 1:usize
+    }
+    index = 0:usize
+    loop index < hook.environment.len() {
+        auto binding = hook.environment.get_ref(index).clone()
+        auto value = resolve_argument(binding, hook.clone(), request)
+        if value.is_err() { return Result<string, string>::Err(value.unwrap_err()) }
+        auto key# = binding.env_name.clone()
+        if key.len() == 0:usize {
+            key = string::from("HOOK_")
+            key#.push_str(binding.name.as_str())
+        }
+        command#.env(cede key, cede value.unwrap())
+        index = index + 1:usize
+    }
+    auto files# = Vec<TempFile>::new()
+    index = 0:usize
+    loop index < hook.files.len() {
+        auto binding = hook.files.get_ref(index).clone()
+        auto content = file_binding_content(binding.clone(), hook.clone(), request)
+        if content.is_err() { return Result<string, string>::Err(content.unwrap_err()) }
+        auto text = content.unwrap()
+        auto created = create_command_temp_file(hook.working_dir.clone())
+        if created.is_err() {
+            return Result<string, string>::Err(string::from("temporary command file could not be created"))
+        }
+        auto file# = created.unwrap()
+        auto written = file#.write(text.as_str())
+        if written.is_err() {
+            return Result<string, string>::Err(string::from("temporary command file could not be written"))
+        }
+        auto count = written.unwrap()
+        if count != text.len() { return Result<string, string>::Err(string::from("temporary command file could not be written")) }
+        if file#.close().is_err() {
+            return Result<string, string>::Err(string::from("temporary command file could not be closed"))
+        }
+        command#.env(cede file_binding_environment_name(binding), cede file.path())
+        files#.push(cede file)
+        index = index + 1:usize
+    }
+    if hook.capture_output {
+        auto output = command#.output()
+        if output.is_err() { return finish_with_temp_file_cleanup(Result<string, string>::Err(string::from("configured command could not be started")), cede files) }
+        auto completed = output.unwrap()
+        if completed.status.success() { return finish_with_temp_file_cleanup(Result<string, string>::Ok(completed.stdout.clone()), cede files) }
+        if hook.capture_output_on_error {
+            auto text# = completed.stdout
+            text#.push_str(completed.stderr.as_str())
+            return finish_with_temp_file_cleanup(Result<string, string>::Err(cede text), cede files)
+        }
+        return finish_with_temp_file_cleanup(Result<string, string>::Err(string::from("configured command returned non-zero status")), cede files)
+    }
+    auto status = command#.try_status()
+    if status.is_err() { return finish_with_temp_file_cleanup(Result<string, string>::Err(string::from("configured command could not be started")), cede files) }
+    auto exit = status.unwrap()
+    if !exit.success() { return finish_with_temp_file_cleanup(Result<string, string>::Err(string::from("configured command returned non-zero status")), cede files) }
+    return finish_with_temp_file_cleanup(Result<string, string>::Ok(hook.response_message.clone()), cede files)
+}
+
+// This partial policy accepts a header value or payload HMAC rule and invokes
+// only configuration-owned argv strings. Request values never enter a shell.
+fn configured_headers(hook: Hook) -> HeaderMap {
+    auto headers# = HeaderMap::new()
+    auto _type = headers#.insert(string::from("Content-Type"), string::from("text/plain"))
+    auto index# = 0:usize
+    loop index < hook.response_headers.len() {
+        auto header = hook.response_headers.get_ref(index).clone()
+        auto inserted = headers#.insert(cede header.name, cede header.value)
+        index = index + 1:usize
+    }
+    return headers
+}
+
+pub fn parse_global_header(spec: str) -> Result<ResponseHeader, string> {
+    auto equals = spec.index_of('=')
+    match equals {
+        auto Option<usize>::Some(split_at) => {
+            if split_at == 0:usize { return Result<ResponseHeader, string>::Err(string::from("header must use name=value")) }
+            auto name = text_slice(spec, 0:usize, split_at)
+            auto value = text_slice(spec, split_at + 1:usize, spec.len())
+            auto probe# = HeaderMap::new()
+            if probe#.insert(name.clone(), value.clone()).is_err() {
+                return Result<ResponseHeader, string>::Err(string::from("header is invalid"))
+            }
+            return Result<ResponseHeader, string>::Ok(ResponseHeader(name = cede name, value = cede value))
+        }
+        _ => return Result<ResponseHeader, string>::Err(string::from("header must use name=value"))
+    }
+}
+
+fn apply_global_headers(response#: HttpResponse, global: Vec<ResponseHeader>) {
+    auto index# = 0:usize
+    loop index < global.len() {
+        auto header = global.get_ref(index).clone()
+        auto _inserted = response.headers#.insert(cede header.name, cede header.value)
+        index = index + 1:usize
+    }
+}
+
+fn request_method(method: HttpMethod, headers: HeaderMap) -> string {
+    auto raw = headers.get("x-toka-webhook-method")
+    if raw.is_some() { return raw.unwrap() }
+    if method == HttpMethod::GET { return string::from("GET") }
+    if method == HttpMethod::POST { return string::from("POST") }
+    if method == HttpMethod::PUT { return string::from("PUT") }
+    if method == HttpMethod::DELETE { return string::from("DELETE") }
+    return string::from("")
+}
+
+fn accepts_method(hook: Hook, method: HttpMethod, headers: HeaderMap) -> bool {
+    if hook.methods.len() == 0:usize { return true }
+    auto actual = request_method(method, headers)
+    if actual.len() == 0:usize { return false }
+    auto index# = 0:usize
+    loop index < hook.methods.len() {
+        if hook.methods.get_ref(index).as_str().equals(actual.as_str()) { return true }
+        index = index + 1:usize
+    }
+    return false
+}
+
+fn dispatch_at_prefix(hook: Hook, request: HttpRequest, prefix: str, defaults: Vec<string>) -> HttpResponse {
+    auto request_path = route_path(request.path.as_str())
+    if !request_path.as_str().equals(expected_path_at_prefix(hook, prefix).as_str()) {
+        return HttpResponse::not_found()
+    }
+    if !accepts_method(hook, request.method, request.headers.clone()) ||
+       (hook.methods.len() == 0:usize && !default_methods_allow(defaults, request.method, request.headers.clone())) {
+        return HttpResponse(status_code = 405:i32, content_type = string::from("text/plain"),
+                            headers = configured_headers(hook), body = string::from(""))
+    }
+    if !authorized(hook, request) {
+        auto headers = configured_headers(hook)
+        return HttpResponse(status_code = hook.mismatch_status, content_type = string::from("text/plain"),
+                            headers = cede headers, body = string::from("hook trigger rule rejected request"))
+    }
+    auto result = execute(hook, request)
+    if result.is_err() {
+        auto headers = configured_headers(hook)
+        return HttpResponse(status_code = 500:i32, content_type = string::from("text/plain"),
+                            headers = cede headers, body = string::from("hook command failed"))
+    }
+    auto headers = configured_headers(hook)
+    return HttpResponse(status_code = hook.success_status, content_type = string::from("text/plain"),
+                        headers = cede headers, body = result.unwrap())
+}
+
+pub fn dispatch(hook: Hook, request: HttpRequest) -> HttpResponse {
+    auto defaults# = Vec<string>::new()
+    return dispatch_at_prefix(hook, request, "hooks", cede defaults)
+}
+
+fn default_methods_allow(defaults: Vec<string>, method: HttpMethod, headers: HeaderMap) -> bool {
+    if defaults.len() == 0:usize { return true }
+    auto actual = request_method(method, headers)
+    if actual.len() == 0:usize { return false }
+    auto index# = 0:usize
+    loop index < defaults.len() {
+        if defaults.get_ref(index).as_str().equals(actual.as_str()) { return true }
+        index = index + 1:usize
+    }
+    return false
+}
+
+fn find_hook(hooks: Vec<Hook>, path: str) -> Option<Hook> {
+    return find_hook_at_prefix(hooks, path, "hooks")
+}
+
+fn find_hook_at_prefix(hooks: Vec<Hook>, path: str, prefix: str) -> Option<Hook> {
+    auto route = route_path(path)
+    auto index# = 0:usize
+    loop index < hooks.len() {
+        auto candidate = hooks.get_ref(index).clone()
+        if expected_path_at_prefix(candidate, prefix).as_str().equals(route.as_str()) { return Option<Hook>::Some(cede candidate) }
+        index = index + 1:usize
+    }
+    return Option<Hook>::None
+}
+
+
+pub fn parse_port(text: str) -> Result<u16, string> {
+    if text.len() == 0:usize { return Result<u16, string>::Err(string::from("port must not be empty")) }
+    auto value# = 0:u32
+    auto index# = 0:usize
+    loop index < text.len() {
+        auto byte = text.byte_at(index)
+        if byte < 48 || byte > 57 { return Result<u16, string>::Err(string::from("port must contain only decimal digits")) }
+        value = value * 10:u32 + (byte - 48) as u32
+        if value > 65535:u32 { return Result<u16, string>::Err(string::from("port is outside the u16 range")) }
+        index = index + 1:usize
+    }
+    if value == 0:u32 { return Result<u16, string>::Err(string::from("port must be non-zero")) }
+    return Result<u16, string>::Ok(value as u16)
+}
+
+fn status_phrase(status: i32) -> string {
+    if status == 200:i32 { return string::from("OK") }
+    if status == 201:i32 { return string::from("Created") }
+    if status == 202:i32 { return string::from("Accepted") }
+    if status == 204:i32 { return string::from("No Content") }
+    if status == 400:i32 { return string::from("Bad Request") }
+    if status == 401:i32 { return string::from("Unauthorized") }
+    if status == 403:i32 { return string::from("Forbidden") }
+    if status == 404:i32 { return string::from("Not Found") }
+    if status == 405:i32 { return string::from("Method Not Allowed") }
+    if status == 409:i32 { return string::from("Conflict") }
+    if status == 422:i32 { return string::from("Unprocessable Content") }
+    if status == 500:i32 { return string::from("Internal Server Error") }
+    return string::from("Webhook")
+}
+
+fn response_wire(response: HttpResponse) -> string {
+    auto wire# = string::from("HTTP/1.1 ")
+    wire#.push_str(string::from_int(response.status_code).as_str())
+    wire#.push_str(" ")
+    wire#.push_str(status_phrase(response.status_code).as_str())
+    auto wrote_content_type# = false
+    auto index# = 0:usize
+    loop index < response.headers.entries.len() {
+        auto header = response.headers.entries.get_ref(index).clone()
+        if !header.key.as_str().eq_ignore_ascii_case("content-length") &&
+           !header.key.as_str().eq_ignore_ascii_case("connection") {
+            wire#.push_str("\r\n")
+            wire#.push_str(header.key.as_str())
+            wire#.push_str(": ")
+            wire#.push_str(header.value.as_str())
+            if header.key.as_str().eq_ignore_ascii_case("content-type") { wrote_content_type = true }
+        }
+        index = index + 1:usize
+    }
+    if !wrote_content_type {
+        wire#.push_str("\r\nContent-Type: ")
+        wire#.push_str(response.content_type.as_str())
+    }
+    wire#.push_str("\r\nContent-Length: ")
+    wire#.push_str(string::from_int(response.body.len()).as_str())
+    wire#.push_str("\r\nConnection: close\r\n\r\n")
+    wire#.push_str(response.body.as_str())
+    return wire
+}
+
+fn wire_bytes(wire: str) -> Vec<u8> {
+    auto bytes# = Vec<u8>::with_capacity(wire.len())
+    auto index# = 0:usize
+    loop index < wire.len() {
+        bytes#.push(wire.byte_at(index) as u8)
+        index = index + 1:usize
+    }
+    return bytes
+}
+
+// Toka's current HTTP parser aborts on a header whose value is empty.  For
+// webhook matching, an empty value has the same outcome as an absent value,
+// so omit those lines before handing the request to that parser.
+fn is_empty_header_line(line: str) -> bool {
+    auto colon = line.index_of(':')
+    if colon.is_none() { return false }
+    auto index# = colon.unwrap() + 1:usize
+    loop index < line.len() {
+        auto byte = line.byte_at(index)
+        if byte != ' ' && byte != '\t' && byte != '\r' { return false }
+        index = index + 1:usize
+    }
+    return true
+}
+
+fn omit_empty_headers(raw: str) -> string {
+    auto cleaned# = string::from("")
+    auto start# = 0:usize
+    auto in_headers# = true
+    loop start < raw.len() {
+        auto end# = start
+        loop end < raw.len() && raw.byte_at(end) != '\n' { end = end + 1:usize }
+        auto line = text_slice(raw, start, end)
+        if in_headers && line.as_str().equals("\r") { in_headers = false }
+        if !in_headers || !is_empty_header_line(line.as_str()) {
+            cleaned#.push_str(line.as_str())
+            if end < raw.len() { cleaned#.push_str("\n") }
+        }
+        if end == raw.len() { break }
+        start = end + 1:usize
+    }
+    return cleaned
+}
+
+fn request_wire_method(raw: str) -> Result<string, string> {
+    auto space = raw.index_of(' ')
+    match space {
+        auto Option<usize>::Some(end) => {
+            if end == 0:usize { return Result<string, string>::Err(string::from("malformed HTTP request method")) }
+            return Result<string, string>::Ok(text_slice(raw, 0:usize, end))
+        }
+        _ => return Result<string, string>::Err(string::from("malformed HTTP request method"))
+    }
+}
+
+fn peer_ipv4(stream#: TcpStream) -> Option<string> {
+    unsafe {
+        auto *address# = unsafe alloc [32] byte as *char
+        auto *length# = unsafe alloc [1] u32
+        length[0] = 32:u32
+        auto result = getpeername(stream#.get_fd(), *address as *void, *length as *u32)
+        if result != 0 {
+            libc_free(*address as *void)
+            libc_free(*length as *void)
+            return Option<string>::None
+        }
+        // Linux stores AF_INET in the first two bytes; macOS stores a length
+        // byte followed by AF_INET.  Never interpret an IPv6 sockaddr as IPv4.
+        auto *family0 = (*address as usize + 0:usize) as *u8
+        auto *family1 = (*address as usize + 1:usize) as *u8
+        if !(family0 == 2 && family1 == 0) && !(family0 == 16 && family1 == 2) {
+            libc_free(*address as *void)
+            libc_free(*length as *void)
+            return Option<string>::None
+        }
+        // sockaddr_in stores IPv4 octets at offsets 4 through 7 on POSIX.
+        auto *octet0 = (*address as usize + 4:usize) as *u8
+        auto *octet1 = (*address as usize + 5:usize) as *u8
+        auto *octet2 = (*address as usize + 6:usize) as *u8
+        auto *octet3 = (*address as usize + 7:usize) as *u8
+        auto *port_high = (*address as usize + 2:usize) as *u8
+        auto *port_low = (*address as usize + 3:usize) as *u8
+        auto port# = port_high as i32
+        port = port * 256:i32 + port_low as i32
+        auto text# = string::from_int(octet0 as i32)
+        text#.push_str(".")
+        text#.push_str(string::from_int(octet1 as i32).as_str())
+        text#.push_str(".")
+        text#.push_str(string::from_int(octet2 as i32).as_str())
+        text#.push_str(".")
+        text#.push_str(string::from_int(octet3 as i32).as_str())
+        text#.push_str(":")
+        text#.push_str(string::from_int(port).as_str())
+        libc_free(*address as *void)
+        libc_free(*length as *void)
+        return Option<string>::Some(cede text)
+    }
+}
+
+fn write_local_response_async(stream#: TcpStream, response: HttpResponse, timeout_ms: i32) -> async Result<(), string> {
+    auto wire = response_wire(response)
+    auto written = stream#.write_from_async(cede wire_bytes(wire.as_str()), timeout_ms).await
+    if written.is_err() { return Result<(), string>::Err(written.unwrap_err().message) }
+    auto completed# = written.unwrap()
+    auto complete = completed.complete
+    auto _buffer = completed#.take_buffer()
+    if !complete { return Result<(), string>::Err(string::from("incomplete HTTP response write")) }
+    return Result<(), string>::Ok(())
+}
+
+fn read_local_request_async(stream#: TcpStream, max_request_bytes: usize, timeout_ms: i32) -> async Result<HttpRequest, string> {
+    auto received# = Vec<u8>::with_capacity(4096:usize)
+    auto buffer# = Vec<u8>::with_capacity(4096:usize)
+    auto last_error# = string::from("malformed or incomplete HTTP request")
+    loop received.len() < max_request_bytes {
+        auto read_result = stream#.read_into_async(cede buffer, 4096:usize, timeout_ms).await
+        if read_result.is_err() { return Result<HttpRequest, string>::Err(read_result.unwrap_err().message) }
+        auto chunk# = read_result.unwrap()
+        auto count = chunk.bytes_read
+        buffer = chunk#.take_buffer()
+        if count == 0:usize { return Result<HttpRequest, string>::Err(cede last_error) }
+        auto index# = 0:usize
+        loop index < count {
+            received#.push(buffer#.get(index))
+            index = index + 1:usize
+        }
+        auto text# = string::from("")
+        index = 0:usize
+        loop index < received.len() {
+            text#.push_byte_raw(received#.get(index))
+            index = index + 1:usize
+        }
+        auto parsed = parse_http_request_with_limit(omit_empty_headers(text.as_str()), max_request_bytes)
+        if parsed.is_ok() {
+            auto request# = parsed.unwrap()
+            auto method = request_wire_method(text.as_str())
+            if method.is_err() { return Result<HttpRequest, string>::Err(method.unwrap_err()) }
+            auto _method = request.headers#.insert(string::from("X-Toka-Webhook-Method"), method.unwrap())
+            auto _peer = request.headers#.insert(string::from("X-Toka-Webhook-Remote-Addr"), string::from(""))
+            auto peer = peer_ipv4(stream)
+            if peer.is_some() {
+                auto _peer = request.headers#.insert(string::from("X-Toka-Webhook-Remote-Addr"), peer.unwrap())
+            }
+            return Result<HttpRequest, string>::Ok(cede request)
+        }
+        last_error = parsed.unwrap_err()
+    }
+    return Result<HttpRequest, string>::Err(string::from("HTTP request exceeds configured size limit"))
+}
+
+// Requests are handled serially in this bounded initial implementation. The
+// accepted connection is always closed after one complete response.
+pub fn serve_forever_async(cede supplied_hooks: Vec<Hook>, cede supplied_listener: TcpListener,
+                           max_request_bytes: usize, timeout_ms: i32) -> async i32 {
+    auto hooks# = cede supplied_hooks
+    auto listener# = cede supplied_listener
+    loop true {
+        auto stream# = listener#.accept_async().await
+        if !stream.is_valid() { continue }
+        auto received = read_local_request_async(stream, max_request_bytes, timeout_ms).await
+        if received.is_err() {
+            auto _write = write_local_response_async(stream, HttpResponse::bad_request(string::from("invalid HTTP request")), timeout_ms).await
+            stream#.close()
+            continue
+        }
+        auto request = received.unwrap()
+        auto selected = find_hook(hooks, request.path.as_str())
+        auto response# = HttpResponse::not_found()
+        if selected.is_some() { response = dispatch(selected.unwrap(), request) }
+        auto _write = write_local_response_async(stream, response, timeout_ms).await
+        stream#.close()
+    }
+    return 0:i32
+}
+
+// Reloading the hooks configuration per connection keeps the parsed rule tree
+// short-lived.  This avoids the current runtime defect in deep-cloning nested
+// enum payloads while retaining deterministic per-request configuration.
+pub fn serve_file_forever_async(cede supplied_paths: Vec<string>, cede supplied_listener: TcpListener,
+                                cede supplied_headers: Vec<ResponseHeader>,
+                                cede supplied_default_methods: Vec<string>,
+                                cede supplied_url_prefix: string,
+                                as_template: bool,
+                                max_request_bytes: usize, timeout_ms: i32) -> async i32 {
+    auto hooks_paths# = cede supplied_paths
+    auto listener# = cede supplied_listener
+    auto global_headers# = cede supplied_headers
+    auto default_methods# = cede supplied_default_methods
+    auto url_prefix# = cede supplied_url_prefix
+    loop true {
+        auto stream# = listener#.accept_async().await
+        if !stream.is_valid() { continue }
+        auto received = read_local_request_async(stream, max_request_bytes, timeout_ms).await
+        if received.is_err() {
+            auto _write = write_local_response_async(stream, HttpResponse::bad_request(string::from("invalid HTTP request")), timeout_ms).await
+            stream#.close()
+            continue
+        }
+        auto request = received.unwrap()
+        auto loaded = load_hook_files(cede hooks_paths.clone(), as_template)
+        auto response# = HttpResponse::not_found()
+        if loaded.is_err() {
+            response = HttpResponse(status_code = 500:i32, content_type = string::from("text/plain"),
+                                    headers = HeaderMap::new(), body = string::from("failed to load hooks JSON"))
+        } else {
+            auto selected = find_hook_at_prefix(loaded.unwrap(), request.path.as_str(), url_prefix.as_str())
+            if selected.is_some() { response = dispatch_at_prefix(selected.unwrap(), request, url_prefix.as_str(), default_methods.clone()) }
+        }
+        apply_global_headers(response, global_headers)
+        auto _write = write_local_response_async(stream, response, timeout_ms).await
+        stream#.close()
+    }
+    return 0:i32
+}
+
+pub fn serve_one_async(cede hook: Hook, cede listener: TcpListener, max_request_bytes: usize, timeout_ms: i32) -> async Result<i32, string> {
+    auto hook# = cede hook
+    auto listener# = cede listener
+    auto stream# = listener#.accept_async().await
+    if !stream.is_valid() { return Result<i32, string>::Err(string::from("HTTP server accept failed")) }
+    auto request = read_local_request_async(stream, max_request_bytes, timeout_ms).await
+    if request.is_err() {
+        auto _write = write_local_response_async(stream, HttpResponse::bad_request(string::from("invalid HTTP request")), timeout_ms).await
+        stream#.close()
+        return Result<i32, string>::Err(string::from("invalid HTTP request"))
+    }
+    auto response = dispatch(hook, request.unwrap())
+    auto wrote = write_local_response_async(stream, response, timeout_ms).await
+    stream#.close()
+    if wrote.is_err() { return Result<i32, string>::Err(wrote.unwrap_err()) }
+    return Result<i32, string>::Ok(0:i32)
+}

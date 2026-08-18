@@ -1,0 +1,10 @@
+pub const PACKAGE = (
+    name = "webhook_app_consumer",
+    version = "0.1.0",
+    kind = "application",
+    license = "MIT",
+    compiler = "1.0.0-rc.6",
+    dependencies = (
+        (name = "webhook", version = "0.1.0", kind = "application"),
+    )
+)
