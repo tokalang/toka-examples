@@ -19,8 +19,8 @@ TARGET_DIR = ROOT / "target"
 LOCK_FILE = ROOT / "package.lock"
 TOKA_DIR = ROOT / ".toka"
 
-EXPECTED_SHA256 = "d9d9bbb379c2839ccba81ede553c7a538a0ded4e1872b33fc7a82ee61bcf2225"
-EXPECTED_VERSION = "0.1.0"
+EXPECTED_SHA256 = "087ff3cd90b6b0db7fdb0a197377ccfe3251c8498f10f9893fa603c319f1bcc8"
+EXPECTED_VERSION = "0.1.1"
 
 
 def log(msg: str) -> None:
@@ -52,8 +52,8 @@ def wait_for_catalog_deployment(max_wait_secs: int = 60) -> None:
                     runner_pkg = next((p for p in packages if p.get("name") == "task-runner"), None)
                     if runner_pkg:
                         versions = runner_pkg.get("versions", [])
-                        v010 = next((v for v in versions if v.get("version") == EXPECTED_VERSION), None)
-                        if v010 and v010.get("sha256") == EXPECTED_SHA256:
+                        v011 = next((v for v in versions if v.get("version") == EXPECTED_VERSION), None)
+                        if v011 and v011.get("sha256") == EXPECTED_SHA256:
                             log(f"  [+] Confirmed task-runner@{EXPECTED_VERSION} is live on pkg.tokalang.dev")
                             return
         except Exception as e:
@@ -62,7 +62,7 @@ def wait_for_catalog_deployment(max_wait_secs: int = 60) -> None:
     log("  [!] CDN deployment wait timeout; proceeding with direct fetch validation...")
 
 
-def run_cmd(cmd: list[str], env: dict[str, str] | None = None, cwd: Path | None = None) -> subprocess.CompletedProcess[str]:
+def run_cmd(cmd: list[str], env: dict[str, str] | None = None, cwd: Path | None = None, check: bool = True) -> subprocess.CompletedProcess[str]:
     proc_env = os.environ.copy()
     if env:
         proc_env.update(env)
@@ -74,7 +74,7 @@ def run_cmd(cmd: list[str], env: dict[str, str] | None = None, cwd: Path | None 
         stderr=subprocess.PIPE,
         text=True
     )
-    if res.returncode != 0:
+    if check and res.returncode != 0:
         raise RuntimeError(f"Command failed (exit {res.returncode}): {' '.join(cmd)}\nSTDOUT:\n{res.stdout}\nSTDERR:\n{res.stderr}")
     return res
 
@@ -84,7 +84,7 @@ def test_blackbox_task_runner(binary_path: Path) -> None:
 
     # 1. Test CLI basics
     res = run_cmd([str(binary_path), "--version"])
-    assert "task-runner 0.1.0" in res.stdout, "Version mismatch"
+    assert f"task-runner {EXPECTED_VERSION}" in res.stdout, "Version mismatch"
 
     res = run_cmd([str(binary_path), "--help"])
     assert "Usage:" in res.stdout, "Help mismatch"
@@ -124,7 +124,58 @@ tasks:
         assert "Result: SUCCESS" in exec_res.stdout, "Execution failed"
         assert "consumer workflow step 2" in exec_res.stdout, "Echo step did not run"
 
-    log("  [+] Blackbox workflow assertions passed successfully!")
+    # 3. v0.1.1 Specific Behavioral Assertions (Global Pre-flight, Lexical CWD, String ENV)
+    log("  Testing v0.1.1 behavioral fixes in resolved binary...")
+    
+    # Assertion A: Unrelated broken dependency must abort execution before child processes
+    with tempfile.TemporaryDirectory(prefix="consumer-v011-preflight-") as tmp_dir:
+        marker_file = os.path.join(tmp_dir, "must_never_exist.txt")
+        broken_yaml = os.path.join(tmp_dir, "broken.yaml")
+        with open(broken_yaml, "w") as f:
+            f.write(f"""version: 1
+tasks:
+  wanted:
+    program: "/usr/bin/touch"
+    args: ["{marker_file}"]
+  unrelated_broken:
+    needs: ["ghost_dependency"]
+    program: "/usr/bin/true"
+""")
+        res = run_cmd([str(binary_path), "-f", broken_yaml, "wanted"], check=False)
+        assert res.returncode == 1, f"Expected returncode 1 on global broken dep, got {res.returncode}"
+        assert not os.path.exists(marker_file), "CRITICAL: Subprocess spawned despite global invalid dependency!"
+        assert "ghost_dependency" in res.stdout or "ghost_dependency" in res.stderr
+
+    # Assertion B: Absolute cwd rejection
+    with tempfile.TemporaryDirectory(prefix="consumer-v011-cwd-") as tmp_dir:
+        abs_yaml = os.path.join(tmp_dir, "abs_cwd.yaml")
+        with open(abs_yaml, "w") as f:
+            f.write("""version: 1
+tasks:
+  abs_task:
+    program: "/usr/bin/true"
+    cwd: "/tmp"
+""")
+        res = run_cmd([str(binary_path), "-f", abs_yaml], check=False)
+        assert res.returncode == 1, "Expected rejection for absolute cwd"
+        assert "must be a relative path" in res.stdout or "must be a relative path" in res.stderr
+
+    # Assertion C: Non-string env rejection
+    with tempfile.TemporaryDirectory(prefix="consumer-v011-env-") as tmp_dir:
+        env_yaml = os.path.join(tmp_dir, "bad_env.yaml")
+        with open(env_yaml, "w") as f:
+            f.write("""version: 1
+tasks:
+  env_task:
+    program: "/usr/bin/true"
+    env:
+      PORT: 8080
+""")
+        res = run_cmd([str(binary_path), "-f", env_yaml], check=False)
+        assert res.returncode == 1, "Expected rejection for non-string env"
+        assert "must be a string" in res.stdout or "must be a string" in res.stderr
+
+    log("  [+] Blackbox workflow and v0.1.1 behavioral assertions passed successfully!")
 
 
 def main() -> int:
@@ -150,7 +201,6 @@ def main() -> int:
     # Step 2: Online resolution
     log("Step 2: Running real online `toka fetch` against pkg.tokalang.dev...")
     online_env = {"TOKA_OFFLINE": "0"}
-    # Remove any custom TOKA_REGISTRY_URL so it defaults to https://pkg.tokalang.dev
     if "TOKA_REGISTRY_URL" in os.environ:
         del os.environ["TOKA_REGISTRY_URL"]
 
@@ -159,7 +209,7 @@ def main() -> int:
 
     lock_content = LOCK_FILE.read_text(encoding="utf-8")
     assert EXPECTED_SHA256 in lock_content, f"package.lock missing expected sha256 {EXPECTED_SHA256}"
-    log("  [+] package.lock created with verified SHA-256")
+    log(f"  [+] package.lock created with verified SHA-256 for v{EXPECTED_VERSION}")
 
     # Step 3: Verify unpacked application package
     unpacked_pkg = TOKA_DIR / "packages" / f"task_runner-{EXPECTED_VERSION}"
@@ -193,7 +243,7 @@ def main() -> int:
     assert runner_bin.is_file(), "task-runner binary not generated"
 
     # Step 5: Test online application execution
-    log("Step 5: Executing blackbox application qualification tests...")
+    log("Step 5: Executing blackbox application qualification tests (Online Phase)...")
     test_blackbox_task_runner(runner_bin)
 
     if not args.skip_offline:
@@ -224,9 +274,10 @@ def main() -> int:
             str(unpacked_pkg / "src" / "main.tk"),
             "-o", str(runner_bin)
         ])
+        log("Step 7: Executing blackbox application qualification tests (Offline Replay Phase)...")
         test_blackbox_task_runner(runner_bin)
 
-    log("CONSUMER VERIFICATION 100% COMPLETE & PASSING!")
+    log(f"CONSUMER VERIFICATION FOR task-runner@{EXPECTED_VERSION} 100% COMPLETE & PASSING!")
     return 0
 
 
