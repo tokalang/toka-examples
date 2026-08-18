@@ -249,12 +249,6 @@ jobs:
           toka build
           ./target/debug/registry_unicode_consumer
 
-      - name: Resolve and verify recursive migrate application consumer (Online & Offline)
-        working-directory: migrate_app_consumer
-        run: |
-          set -euo pipefail
-          python3 verify_consumer.py
-
       - name: Replay Unicode lock offline from the cached archive
         working-directory: registry_unicode_consumer
         run: |
@@ -485,3 +479,56 @@ jobs:
           cmp package.lock "$RUNNER_TEMP/registry-redis-package.lock"
           test -x target/debug/registry_redis_consumer
           ./target/debug/registry_redis_consumer
+
+  rc6-release-consumers:
+    runs-on: ubuntu-22.04
+    env:
+      TOKA_VERSION: v1.0.0-rc.6
+      TOKA_ARCHIVE: toka-v1.0.0-rc.6-linux-x64.tar.gz
+      TOKA_ARCHIVE_SHA256: 9a99343688a12f4422ddc7055e34f061fe3ae9e42abd3f91394421aedb415cf8
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install native package dependencies
+        run: |
+          set -euo pipefail
+          export DEBIAN_FRONTEND=noninteractive
+          sudo -E apt-get update -o Acquire::Retries=5
+          sudo apt-get install -y curl lsb-release pkg-config software-properties-common wget \
+            zlib1g-dev libzstd-dev libssl-dev libsqlite3-dev
+          wget --timeout=15 --tries=3 https://apt.llvm.org/llvm.sh
+          chmod +x llvm.sh
+          sudo -E ./llvm.sh 20
+          echo "/usr/lib/llvm-20/bin" >> "$GITHUB_PATH"
+          echo "CC=clang-20" >> "$GITHUB_ENV"
+
+      - name: Install locked Toka RC6 SDK
+        run: |
+          set -euo pipefail
+          curl --fail --location --retry 3 \
+            --output "$RUNNER_TEMP/$TOKA_ARCHIVE" \
+            "https://github.com/tokalang/toka/releases/download/$TOKA_VERSION/$TOKA_ARCHIVE"
+          echo "$TOKA_ARCHIVE_SHA256  $RUNNER_TEMP/$TOKA_ARCHIVE" | sha256sum --check --strict
+          tar -xzf "$RUNNER_TEMP/$TOKA_ARCHIVE" -C "$RUNNER_TEMP"
+          sdk="$RUNNER_TEMP/${TOKA_ARCHIVE%.tar.gz}"
+          echo "$sdk/bin" >> "$GITHUB_PATH"
+          echo "TOKA_SDK=$sdk" >> "$GITHUB_ENV"
+          echo "TOKA_LIB=$sdk/lib" >> "$GITHUB_ENV"
+
+      - name: Assert Toka RC6 Toolchain Baseline
+        run: |
+          set -euo pipefail
+          toka --version | grep -F "1.0.0-rc.6"
+          tokac --version | grep -F "1.0.0-rc.6"
+
+      - name: Verify sqlite@0.1.1 consumer on RC6 toolchain (Online & Offline)
+        working-directory: registry_sqlite_consumer
+        run: |
+          set -euo pipefail
+          python3 verify_consumer.py
+
+      - name: Verify recursive migrate@0.1.1 application consumer on RC6 toolchain (Online & Offline)
+        working-directory: migrate_app_consumer
+        run: |
+          set -euo pipefail
+          python3 verify_consumer.py
