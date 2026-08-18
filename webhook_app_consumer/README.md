@@ -1,6 +1,6 @@
 # Webhook Application Consumer
 
-A fresh, isolated black-box application consumer that resolves, locks, builds, and executes the released `webhook` (v0.1.0) application package on top of Toka v1.0.0-rc.6.
+A fresh, isolated black-box application consumer that resolves, locks, builds, and executes the released `webhook` (v0.1.1) application package on top of Toka v1.0.0-rc.6.
 
 ## Verification
 

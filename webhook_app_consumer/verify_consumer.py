@@ -128,11 +128,10 @@ def run_online_phase(toka: Path, tokac: Path, lib: Path) -> None:
 
     env = os.environ.copy()
     env["TOKA_LIB"] = str(lib)
-    # Prefer local registry gateway if running, else default to pkg.tokalang.dev
-    if "TOKA_REGISTRY_URL" not in env:
-        env["TOKA_REGISTRY_URL"] = "http://127.0.0.1:4044"
+    registry_url = env.get("TOKA_REGISTRY_URL", "https://pkg.tokalang.dev")
+    env["TOKA_REGISTRY_URL"] = registry_url
 
-    print(f"  Running `{toka} fetch` (Registry: {env['TOKA_REGISTRY_URL']})...")
+    print(f"  Running `{toka} fetch` (Registry: {registry_url})...")
     res = subprocess.run([str(toka), "fetch"], cwd=ROOT, env=env, capture_output=True, text=True)
     if res.returncode != 0:
         raise RuntimeError(f"`toka fetch` failed:\nSTDOUT: {res.stdout}\nSTDERR: {res.stderr}")
