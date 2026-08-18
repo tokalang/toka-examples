@@ -188,7 +188,7 @@ jobs:
           rm -rf target .toka
           toka fetch
           cp package.lock "$RUNNER_TEMP/registry-sqlite-package.lock"
-          test -f .toka/packages/sqlite-0.1.0/native/sqlite_preflight.c
+          test -f .toka/packages/sqlite-0.1.1/native/sqlite_preflight.c
           toka build
           test -n "$(find .toka/build/native -type f -name 'sqlite_preflight-*.o' -print -quit)"
           ./target/debug/registry_sqlite_consumer
@@ -202,7 +202,7 @@ jobs:
           test ! -e .toka/build
           TOKA_OFFLINE=1 toka fetch
           cmp package.lock "$RUNNER_TEMP/registry-sqlite-package.lock"
-          test -f .toka/packages/sqlite-0.1.0/native/sqlite_preflight.c
+          test -f .toka/packages/sqlite-0.1.1/native/sqlite_preflight.c
           test ! -e .toka/build/native
           TOKA_OFFLINE=1 toka build
           cmp package.lock "$RUNNER_TEMP/registry-sqlite-package.lock"
@@ -248,6 +248,12 @@ jobs:
           test -z "$(find .toka/packages/unicode-0.1.1 -name '._*' -print -quit)"
           toka build
           ./target/debug/registry_unicode_consumer
+
+      - name: Resolve and verify recursive migrate application consumer (Online & Offline)
+        working-directory: migrate_app_consumer
+        run: |
+          set -euo pipefail
+          python3 verify_consumer.py
 
       - name: Replay Unicode lock offline from the cached archive
         working-directory: registry_unicode_consumer
