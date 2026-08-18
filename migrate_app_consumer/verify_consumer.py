@@ -33,14 +33,32 @@ def log(msg: str) -> None:
 
 
 def get_sdk() -> tuple[Path, Path, Path]:
-    sdk_root = os.environ.get("TOKA_SDK", "/tmp/toka-sdk-rc6")
-    root_path = Path(sdk_root)
-    toka = root_path / "bin" / "toka"
-    tokac = root_path / "bin" / "tokac"
-    lib = root_path / "lib"
-    if not toka.is_file() or not tokac.is_file() or not lib.is_dir():
-        raise RuntimeError(f"Invalid TOKA_SDK at {sdk_root}: missing bin/toka, bin/tokac, or lib/")
-    return toka, tokac, lib
+    sdk_root = os.environ.get("TOKA_SDK")
+    if sdk_root:
+        root_path = Path(sdk_root)
+        toka = root_path / "bin" / "toka"
+        tokac = root_path / "bin" / "tokac"
+        lib = root_path / "lib"
+        if toka.is_file() and tokac.is_file() and lib.is_dir():
+            return toka, tokac, lib
+
+    # Try resolving from PATH and TOKA_LIB (e.g. CI environments)
+    toka_bin = shutil.which("toka")
+    tokac_bin = shutil.which("tokac")
+    toka_lib = os.environ.get("TOKA_LIB")
+    if toka_bin and tokac_bin:
+        toka = Path(toka_bin)
+        tokac = Path(tokac_bin)
+        lib = Path(toka_lib) if toka_lib else toka.parent.parent / "lib"
+        if lib.is_dir():
+            return toka, tokac, lib
+
+    # Fallback to local default
+    fallback = Path("/tmp/toka-sdk-rc6")
+    if fallback.is_dir():
+        return fallback / "bin" / "toka", fallback / "bin" / "tokac", fallback / "lib"
+
+    raise RuntimeError("Could not find Toka SDK: set TOKA_SDK or add toka/tokac to PATH and set TOKA_LIB")
 
 
 def wait_for_catalog_deployment(max_wait_secs: int = 60) -> None:
