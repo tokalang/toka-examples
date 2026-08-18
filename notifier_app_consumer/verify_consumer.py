@@ -19,8 +19,8 @@ import time
 import urllib.request
 
 
-EXPECTED_NOTIFIER_VERSION = "0.1.0"
-EXPECTED_NOTIFIER_ARCHIVE_SHA256 = "6965cd1a8e42929b8fcf12be427ec791099c31f68f4268e0b61a9cd4e631b395"
+EXPECTED_NOTIFIER_VERSION = "0.1.1"
+EXPECTED_NOTIFIER_ARCHIVE_SHA256 = "d449cf4de7cae04ff3c198d773302070e16802457a8a4a6621cdfd7148287c93"
 
 
 def log(msg: str) -> None:
@@ -57,7 +57,7 @@ def get_sdk() -> tuple[Path, Path, Path]:
 
 
 def wait_for_catalog_deployment(max_wait_secs: int = 60) -> None:
-    log("Checking public registry catalog for notifier@0.1.0...")
+    log(f"Checking public registry catalog for notifier@{EXPECTED_NOTIFIER_VERSION}...")
     url = "https://pkg.tokalang.dev/catalog.json"
     start = time.time()
     while time.time() - start < max_wait_secs:

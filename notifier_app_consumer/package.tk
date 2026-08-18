@@ -5,6 +5,6 @@ pub const PACKAGE = (
     entry_modules = ("src/main.tk",),
     targets = ("macos", "linux"),
     dependencies = (
-        notifier = "notifier:0.1.0",
+        notifier = "notifier:0.1.1",
     )
 )
