@@ -1,0 +1,11 @@
+pub const PACKAGE = (
+    name = "task_runner_app_consumer",
+    version = "0.1.0",
+    license = "MIT",
+    compiler = "1.0.0-rc.6",
+    entry_modules = ("src/main.tk",),
+    targets = ("macos", "linux"),
+    dependencies = (
+        task_runner = "task-runner:0.1.0",
+    )
+)
