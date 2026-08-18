@@ -533,7 +533,7 @@ jobs:
           set -euo pipefail
           python3 verify_consumer.py
 
-      - name: Verify notifier@0.1.0 application consumer on RC6 toolchain (Online & Offline)
+      - name: Verify notifier@0.1.1 application consumer on RC6 toolchain (Online & Offline)
         working-directory: notifier_app_consumer
         run: |
           set -euo pipefail

@@ -211,7 +211,8 @@ def build_consumer(consumer_dir: Path, tokac: Path, sdk_lib: Path) -> Path:
 
     bin_path = target_dir / "notifier_app_consumer"
     rt_obj = sdk_lib / "sys" / "toka_rt.o"
-    link_cmd = ["clang", str(main_ll), str(rt_obj)]
+    cc = os.environ.get("CC", "clang")
+    link_cmd = [cc, str(main_ll), str(rt_obj)]
 
     try:
         pkg = subprocess.run(["pkg-config", "--libs", "openssl"], stdout=subprocess.PIPE, text=True)
