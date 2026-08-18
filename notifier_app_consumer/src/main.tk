@@ -1,0 +1,38 @@
+import std/io::{println}
+import std/env::{args}
+import notifier/src/config::{load_config_file}
+import notifier/src/sender::{execute_delivery}
+
+fn main() -> async i32 {
+    auto argv = args()
+    auto config_path# = string::from("config.yaml")
+    auto event_path# = string::from("event.json")
+    auto dry_run# = false
+    auto allow_insecure# = false
+
+    auto i# = 1:usize
+    loop i < argv.len() {
+        auto arg = argv.get_ref(i).clone()
+        if arg.as_str().equals("--dry-run") {
+            dry_run = true
+        } else if arg.as_str().equals("--allow-insecure-http") {
+            allow_insecure = true
+        } else if arg.as_str().equals("--config") {
+            i += 1
+            if i < argv.len() { config_path = argv.get_ref(i).clone() }
+        } else if arg.as_str().equals("--event") {
+            i += 1
+            if i < argv.len() { event_path = argv.get_ref(i).clone() }
+        }
+        i += 1
+    }
+
+    auto cfg_res = load_config_file(config_path.clone())
+    if cfg_res.is_err() {
+        println("[CONSUMER ERROR] Config load failed: {}", cfg_res.unwrap_err())
+        return 1
+    }
+    auto cfg = cfg_res.unwrap()
+
+    return execute_delivery(cfg, event_path, dry_run, allow_insecure).await
+}
