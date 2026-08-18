@@ -1,7 +1,10 @@
 pub const PACKAGE = (
     name = "registry_sqlite_consumer",
-    version = "0.1.0",
+    version = "0.1.1",
+    compiler = "1.0.0-rc.6",
+    entry_modules = ("src/main.tk",),
+    targets = ("macos", "linux"),
     dependencies = (
-        sqlite = "sqlite:0.1.0",
+        sqlite = "sqlite:0.1.1",
     )
 )
