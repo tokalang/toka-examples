@@ -1,0 +1,6 @@
+import std/io::{println}
+
+fn main() -> i32 {
+    println("migrate_app_consumer entrypoint ready")
+    return 0
+}

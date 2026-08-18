@@ -1,0 +1,10 @@
+pub const PACKAGE = (
+    name = "migrate_app_consumer",
+    version = "0.1.0",
+    compiler = "1.0.0-rc.6",
+    entry_modules = ("src/main.tk",),
+    targets = ("macos", "linux"),
+    dependencies = (
+        migrate = "migrate:0.1.0",
+    )
+)
