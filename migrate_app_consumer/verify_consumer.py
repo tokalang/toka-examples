@@ -85,47 +85,41 @@ def run_cmd(cmd: list[str], env: dict[str, str] | None = None, cwd: Path | None 
 
 
 def parse_and_assert_lockfile(lock_path: Path) -> None:
-    log("  Parsing and asserting recursive lockfile structure...")
+    log("  Parsing and strictly asserting toka-lock-v1 recursive lockfile structure...")
     assert lock_path.is_file(), "package.lock does not exist"
-    content = lock_path.read_text(encoding="utf-8")
-    
-    # 1. Assert exact SHA256 matches
-    assert MIGRATE_SHA256 in content, f"Lockfile missing migrate SHA256 {MIGRATE_SHA256}"
-    assert SQLITE_SHA256 in content, f"Lockfile missing sqlite SHA256 {SQLITE_SHA256}"
+    lines = [l.rstrip("\r\n") for l in lock_path.read_text(encoding="utf-8").splitlines() if l.strip()]
+    assert lines and lines[0] == "toka-lock-v1", f"Lockfile header mismatch: {lines[0] if lines else 'empty'}"
 
-    # 2. Check lockfile lines for package definitions and dependencies edge
-    lines = [l.strip() for l in content.splitlines() if l.strip()]
-    has_migrate_pkg = False
-    has_sqlite_pkg = False
-    has_migrate_to_sqlite_edge = False
+    packages: dict[str, dict[str, str]] = {}
+    for line in lines[1:]:
+        fields = line.split("\t")
+        assert len(fields) >= 8, f"Malformed toka-lock-v1 package line: {line!r} (expected >= 8 fields)"
+        assert fields[0] == "package", f"Unexpected record type: {fields[0]}"
+        binding_name = fields[1]
+        packages[binding_name] = {
+            "source_type": fields[2],
+            "pkg_name": fields[3],
+            "version": fields[4],
+            "tarball_sha256": fields[5],
+            "tree_hash": fields[6],
+            "dependencies": fields[7],
+        }
 
-    current_pkg = None
-    in_dependencies = False
+    # 1. Assert migrate package record
+    assert "migrate" in packages, "migrate package record missing in toka-lock-v1"
+    migrate_info = packages["migrate"]
+    assert migrate_info["version"] == MIGRATE_VERSION, f"migrate version mismatch: {migrate_info['version']} != {MIGRATE_VERSION}"
+    assert migrate_info["tarball_sha256"] == MIGRATE_SHA256, f"migrate tarball SHA-256 mismatch: {migrate_info['tarball_sha256']}"
+    assert migrate_info["dependencies"] == "sqlite", f"migrate dependency mismatch: expected 'sqlite', got {migrate_info['dependencies']!r}"
 
-    for line in lines:
-        if line.startswith("[[package]]") or line.startswith("[package.") or "name = \"migrate\"" in line:
-            if "name = \"migrate\"" in line:
-                has_migrate_pkg = True
-                current_pkg = "migrate"
-            elif "name = \"sqlite\"" in line:
-                has_sqlite_pkg = True
-                current_pkg = "sqlite"
+    # 2. Assert sqlite package record
+    assert "sqlite" in packages, "sqlite package record missing in toka-lock-v1"
+    sqlite_info = packages["sqlite"]
+    assert sqlite_info["version"] == SQLITE_VERSION, f"sqlite version mismatch: {sqlite_info['version']} != {SQLITE_VERSION}"
+    assert sqlite_info["tarball_sha256"] == SQLITE_SHA256, f"sqlite tarball SHA-256 mismatch: {sqlite_info['tarball_sha256']}"
+    assert sqlite_info["dependencies"] in ("-", ""), f"sqlite dependencies should be empty/'-', got {sqlite_info['dependencies']!r}"
 
-        # Check dependency edge within migrate package block or general lock entry
-        if current_pkg == "migrate":
-            if "sqlite =" in line or "sqlite:" in line or "official/sqlite" in line:
-                has_migrate_to_sqlite_edge = True
-
-    # Alternatively, verify general structure if lock is v1 table format
-    if not has_migrate_to_sqlite_edge:
-        # Check if migrate package dependencies tuple or line references sqlite
-        if "migrate" in content and "sqlite" in content:
-            has_migrate_to_sqlite_edge = True
-
-    assert has_migrate_pkg or "migrate" in content, "migrate package missing in lock"
-    assert has_sqlite_pkg or "sqlite" in content, "sqlite package missing in lock"
-    assert has_migrate_to_sqlite_edge, "Recursive dependency edge migrate -> sqlite not found in lock"
-    log("  [+] Lockfile parsed and verified: exact hashes and migrate -> sqlite dependency confirmed.")
+    log(f"  [+] toka-lock-v1 verified: migrate@{MIGRATE_VERSION} (deps: {migrate_info['dependencies']}) -> sqlite@{SQLITE_VERSION} (deps: {sqlite_info['dependencies']})")
 
 
 def compile_migrate_from_packages(tokac: Path, sdk_lib: Path, migrate_pkg: Path, sqlite_pkg: Path) -> Path:
